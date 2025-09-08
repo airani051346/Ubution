@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-### ========= Config (edit or override via env) =========
+### ========= Config (override via env as needed) =========
 AWX_NAMESPACE="${AWX_NAMESPACE:-awx}"
 AWX_NAME="${AWX_NAME:-awx}"
-AWX_NODEPORT="${AWX_NODEPORT:-30080}"                 # AWX Web UI via http://<host>:30080
+AWX_NODEPORT="${AWX_NODEPORT:-30080}"                 # AWX Web UI -> http://<host>:30080
 AWX_ADMIN_USER="${AWX_ADMIN_USER:-admin}"
 AWX_ADMIN_PASS="${AWX_ADMIN_PASS:-ChangeMe_AWX!123}"
 
-# GitLab ports (host:container)
+# GitLab host ports (host:container)
 GITLAB_HTTP_PORT="${GITLAB_HTTP_PORT:-8080}"
 GITLAB_HTTPS_PORT="${GITLAB_HTTPS_PORT:-8443}"
 GITLAB_SSH_PORT="${GITLAB_SSH_PORT:-2222}"
@@ -51,7 +51,21 @@ sudo_test() {
   fi
 }
 
-trap 'warn "Something failed. Check the logs above. You can rerun the script safely; it is mostly idempotent."' ERR
+# Docker wrapper that falls back to sudo if the current session isn't in the docker group yet
+docker_exec() {
+  if docker info >/dev/null 2>&1; then
+    docker "$@"
+  elif sudo -n docker info >/dev/null 2>&1; then
+    sudo docker "$@"
+  else
+    echo "[x] Docker is installed but not accessible (group membership not active yet)."
+    echo "    Either open a new shell (or run 'newgrp docker') or re-run with sudo:"
+    echo "      sudo docker $*"
+    return 1
+  fi
+}
+
+trap 'warn "Something failed. Check the messages above. The script is mostly idempotent—re-run after fixing the issue."' ERR
 
 ### ========= System prep =========
 system_prep() {
@@ -76,8 +90,8 @@ system_prep() {
   fi
 
   # Compose plugin sanity
-  if ! docker compose version >/dev/null 2>&1; then
-    warn "Docker Compose plugin not found; installing plugin…"
+  if ! docker_exec compose version >/dev/null 2>&1; then
+    warn "Docker Compose plugin not found; installing…"
     sudo apt-get install -y docker-compose-plugin
   fi
 
@@ -97,12 +111,12 @@ system_prep() {
     say "k3s already running."
   fi
 
-  # Ensure kubectl binary exists (k3s provides one)
+  # Ensure kubectl exists (k3s provides one)
   if ! need_cmd kubectl; then
     sudo ln -sf /usr/local/bin/kubectl /usr/bin/kubectl || true
   fi
 
-  # Create directories with sudo, then hand over ownership
+  # Create directories with sudo; hand over to current user
   sudo mkdir -p "${GITLAB_DIR}" "${MYSQL_DIR}" "${PHPMYADMIN_DIR}" "${DATAVIEWER_DIR}" "${K8S_DIR}"
   sudo chown -R "$USER":"$USER" "${BASE_DIR}"
 }
@@ -132,7 +146,7 @@ deploy_awx() {
   helm upgrade --install ansible-awx-operator awx-operator/awx-operator \
     -n "${AWX_NAMESPACE}" --create-namespace
 
-  # Create admin password secret
+  # Admin password secret
   cat > "${K8S_DIR}/awx-admin-secret.yaml" <<EOF
 apiVersion: v1
 kind: Secret
@@ -145,7 +159,7 @@ stringData:
 EOF
   kubectl apply -f "${K8S_DIR}/awx-admin-secret.yaml"
 
-  # AWX Custom Resource (NodePort service for the web UI)
+  # AWX Custom Resource (NodePort for web UI)
   cat > "${K8S_DIR}/awx.yaml" <<EOF
 apiVersion: awx.ansible.com/v1beta1
 kind: AWX
@@ -161,11 +175,10 @@ spec:
 EOF
   kubectl apply -f "${K8S_DIR}/awx.yaml"
 
-  say "Waiting for AWX components (operator + instance) to come up…"
-  # Operator deployment rollout
+  say "Waiting for AWX components (operator + instance)…"
   kubectl -n "${AWX_NAMESPACE}" rollout status deployment/awx-operator-controller-manager --timeout=300s || true
 
-  # Best-effort wait for AWX service to appear
+  # Best-effort: wait for the AWX service to appear
   for i in {1..120}; do
     if kubectl -n "${AWX_NAMESPACE}" get svc "${AWX_NAME}-service" >/dev/null 2>&1; then
       say "AWX service detected."
@@ -250,7 +263,7 @@ PHPMYADMIN_PORT=${PHPMYADMIN_PORT}
 DATAVIEWER_PORT=${DATAVIEWER_PORT}
 EOF
 
-  # Minimal Flask app that shows tables and first 100 rows of a demo table
+  # Minimal Flask app that lists tables + sample rows
   cat > "${DATAVIEWER_DIR}/app.py" <<'EOF'
 import os, pymysql
 from flask import Flask, render_template_string
@@ -336,8 +349,8 @@ EOF
 bring_up_compose() {
   say "Starting Docker services (GitLab, MySQL, phpMyAdmin, data-viewer)…"
   pushd "${COMPOSE_DIR}" >/dev/null
-  docker compose build --no-cache data-viewer
-  docker compose up -d
+  docker_exec compose build --no-cache data-viewer
+  docker_exec compose up -d
   popd >/dev/null
 }
 
@@ -373,7 +386,7 @@ MySQL:
 
 phpMyAdmin:
   URL:  http://localhost:${PHPMYADMIN_PORT}
-  Login with MySQL credentials above.
+  Login with the MySQL credentials above.
 
 Data Viewer (demo web app on MySQL):
   URL:  http://localhost:${DATAVIEWER_PORT}
@@ -383,7 +396,7 @@ Files live under:
   ${COMPOSE_DIR}
   ${K8S_DIR}
 
-If you were just added to the 'docker' group, log out/in to use Docker without sudo.
+Note: if you were just added to the 'docker' group, open a new terminal or run 'newgrp docker' to use Docker without sudo.
 EOF
 }
 
