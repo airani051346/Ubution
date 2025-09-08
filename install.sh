@@ -376,6 +376,8 @@ GitLab CE:
   Web:  http://localhost:${GITLAB_HTTP_PORT}
   SSH:  ssh -p ${GITLAB_SSH_PORT} git@localhost
   Data: ${GITLAB_DIR}
+  default password: 
+  sudo docker exec -it compose-gitlab-1 grep 'Password:' /etc/gitlab/initial_root_password
 
 MySQL:
   Host: localhost  Port: 3306
