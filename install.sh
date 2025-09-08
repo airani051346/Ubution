@@ -96,6 +96,7 @@ system_prep() {
   fi
 
   sudo mkdir -p "${GITLAB_DIR}" "${MYSQL_DIR}" "${PHPMYADMIN_DIR}" "${DATAVIEWER_DIR}" "${K8S_DIR}"
+  sudo chown -R "$USER":"$USER" /opt/stack
 }
 
 ### ========= AWX via Operator on k3s =========
