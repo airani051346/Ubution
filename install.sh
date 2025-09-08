@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-### ========= Config (edit for prod) =========
-AWX_NAMESPACE="awx"
-AWX_NAME="awx"
-AWX_NODEPORT=30080                     # AWX Web UI via http://<host>:30080
-AWX_ADMIN_USER="admin"
-AWX_ADMIN_PASS="${AWX_ADMIN_PASS:-ChangeMe_AWX!123}"   # can override via env
+### ========= Config (edit or override via env) =========
+AWX_NAMESPACE="${AWX_NAMESPACE:-awx}"
+AWX_NAME="${AWX_NAME:-awx}"
+AWX_NODEPORT="${AWX_NODEPORT:-30080}"                 # AWX Web UI via http://<host>:30080
+AWX_ADMIN_USER="${AWX_ADMIN_USER:-admin}"
+AWX_ADMIN_PASS="${AWX_ADMIN_PASS:-ChangeMe_AWX!123}"
 
 # GitLab ports (host:container)
-GITLAB_HTTP_PORT=8080
-GITLAB_HTTPS_PORT=8443
-GITLAB_SSH_PORT=2222
+GITLAB_HTTP_PORT="${GITLAB_HTTP_PORT:-8080}"
+GITLAB_HTTPS_PORT="${GITLAB_HTTPS_PORT:-8443}"
+GITLAB_SSH_PORT="${GITLAB_SSH_PORT:-2222}"
 
 # MySQL + phpMyAdmin + demo app
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-ChangeMe_MySQL!123}"
-MYSQL_DB="appdb"
-MYSQL_USER="appuser"
+MYSQL_DB="${MYSQL_DB:-appdb}"
+MYSQL_USER="${MYSQL_USER:-appuser}"
 MYSQL_PASS="${MYSQL_PASS:-ChangeMe_App!123}"
-PHPMYADMIN_PORT=8081
-DATAVIEWER_PORT=8082
+PHPMYADMIN_PORT="${PHPMYADMIN_PORT:-8081}"
+DATAVIEWER_PORT="${DATAVIEWER_PORT:-8082}"
 
 # Paths
 BASE_DIR="/opt/stack"
@@ -51,6 +51,8 @@ sudo_test() {
   fi
 }
 
+trap 'warn "Something failed. Check the logs above. You can rerun the script safely; it is mostly idempotent."' ERR
+
 ### ========= System prep =========
 system_prep() {
   say "Updating apt and installing base tools…"
@@ -60,7 +62,6 @@ system_prep() {
   # Docker Engine + compose plugin
   if ! need_cmd docker; then
     say "Installing Docker Engine…"
-    # Docker repo
     sudo install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --yes --dearmor -o /etc/apt/keyrings/docker.gpg
     echo \
@@ -72,6 +73,12 @@ system_prep() {
     sudo usermod -aG docker "$USER" || true
   else
     say "Docker already installed."
+  fi
+
+  # Compose plugin sanity
+  if ! docker compose version >/dev/null 2>&1; then
+    warn "Docker Compose plugin not found; installing plugin…"
+    sudo apt-get install -y docker-compose-plugin
   fi
 
   # Helm
@@ -90,13 +97,29 @@ system_prep() {
     say "k3s already running."
   fi
 
-  # kubectl (k3s provides one)
+  # Ensure kubectl binary exists (k3s provides one)
   if ! need_cmd kubectl; then
     sudo ln -sf /usr/local/bin/kubectl /usr/bin/kubectl || true
   fi
 
+  # Create directories with sudo, then hand over ownership
   sudo mkdir -p "${GITLAB_DIR}" "${MYSQL_DIR}" "${PHPMYADMIN_DIR}" "${DATAVIEWER_DIR}" "${K8S_DIR}"
-  sudo chown -R "$USER":"$USER" /opt/stack
+  sudo chown -R "$USER":"$USER" "${BASE_DIR}"
+}
+
+### ========= k3s readiness =========
+wait_for_k3s() {
+  export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+  say "Waiting for k3s API to be ready…"
+  for i in {1..120}; do
+    if kubectl get --raw=/readyz 2>/dev/null | grep -q ok; then
+      say "k3s API is ready."
+      kubectl get nodes -o wide || true
+      return 0
+    fi
+    sleep 2
+  done
+  die "k3s API not ready after ~4 minutes."
 }
 
 ### ========= AWX via Operator on k3s =========
@@ -122,7 +145,7 @@ stringData:
 EOF
   kubectl apply -f "${K8S_DIR}/awx-admin-secret.yaml"
 
-  # AWX Custom Resource (NodePort)
+  # AWX Custom Resource (NodePort service for the web UI)
   cat > "${K8S_DIR}/awx.yaml" <<EOF
 apiVersion: awx.ansible.com/v1beta1
 kind: AWX
@@ -138,11 +161,16 @@ spec:
 EOF
   kubectl apply -f "${K8S_DIR}/awx.yaml"
 
-  say "Waiting for AWX pods to become Ready (this can take a few minutes)…"
+  say "Waiting for AWX components (operator + instance) to come up…"
+  # Operator deployment rollout
   kubectl -n "${AWX_NAMESPACE}" rollout status deployment/awx-operator-controller-manager --timeout=300s || true
-  # Wait for AWX web to appear (best-effort)
-  for i in {1..60}; do
-    if kubectl -n "${AWX_NAMESPACE}" get svc "${AWX_NAME}-service" >/dev/null 2>&1; then break; fi
+
+  # Best-effort wait for AWX service to appear
+  for i in {1..120}; do
+    if kubectl -n "${AWX_NAMESPACE}" get svc "${AWX_NAME}-service" >/dev/null 2>&1; then
+      say "AWX service detected."
+      break
+    fi
     sleep 5
   done
 }
@@ -222,7 +250,7 @@ PHPMYADMIN_PORT=${PHPMYADMIN_PORT}
 DATAVIEWER_PORT=${DATAVIEWER_PORT}
 EOF
 
-  # Minimal Flask app that shows tables and top 100 rows of a demo table
+  # Minimal Flask app that shows tables and first 100 rows of a demo table
   cat > "${DATAVIEWER_DIR}/app.py" <<'EOF'
 import os, pymysql
 from flask import Flask, render_template_string
@@ -315,7 +343,13 @@ bring_up_compose() {
 
 ### ========= Post-install info =========
 print_info() {
-  HOST_IP=$(hostname -I | awk '{print $1}')
+  # Try to pick a sensible IP to show
+  HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [[ -z "${HOST_IP}" ]]; then
+    HOST_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+  fi
+  [[ -z "${HOST_IP}" ]] && HOST_IP="localhost"
+
   say "Done! Endpoints:"
   cat <<EOF
 
@@ -345,7 +379,11 @@ Data Viewer (demo web app on MySQL):
   URL:  http://localhost:${DATAVIEWER_PORT}
   Visit /init once to create a demo table.
 
-Files live under: ${COMPOSE_DIR} and ${K8S_DIR}
+Files live under:
+  ${COMPOSE_DIR}
+  ${K8S_DIR}
+
+If you were just added to the 'docker' group, log out/in to use Docker without sudo.
 EOF
 }
 
@@ -354,12 +392,11 @@ main() {
   require_ubuntu
   sudo_test
   system_prep
+  wait_for_k3s
   deploy_awx
   write_compose
   bring_up_compose
   print_info
-  warn "If you were added to the 'docker' group just now, you may need to log out/in to use Docker without sudo."
 }
 
 main "$@"
-
