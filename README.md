@@ -6,7 +6,7 @@ export MYSQL_ROOT_PASSWORD='myMysqlRootPW'
 export MYSQL_PASS='myMysqlAppPW'
 
 next step is the installation:
-        curl -sSL https://raw.githubusercontent.com/airani051346/deployDev/refs/heads/main/install_all.sh | bash
+        curl -sSL https://github.com/airani051346/Ubution/blob/main/install.sh | bash
 
 
 
