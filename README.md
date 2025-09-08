@@ -5,21 +5,21 @@ export AWX_ADMIN_PASS='myawxPassword'<br>
 export MYSQL_ROOT_PASSWORD='myMysqlRootPW'<br>
 export MYSQL_PASS='myMysqlAppPW'<br>
 
-#next step is the installation:
-        curl -sSL https://github.com/airani051346/Ubution/blob/main/install.sh | bash
+#next step is the installation:<br>
+        curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/install.sh | bash
 
 
 
-#how to access AWX:
+#how to access AWX:<br>
        open http://<your-host-ip>:30080, login with the admin credentials shown.
 
-#how to access gitlab:
+#how to access gitlab:<br>
         http://localhost:8080 (first login sets root password).
 
-#how to access phpMyAdmin: 
+#how to access phpMyAdmin:<br> 
         http://localhost:8081 (use MySQL creds from the output).
 
-#how to access Demo web app: 
+#how to access Demo web app: <br>
         http://localhost:8082 → click Init once, then browse data.
 
 
