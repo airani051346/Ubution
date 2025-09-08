@@ -95,7 +95,7 @@ system_prep() {
     sudo ln -sf /usr/local/bin/kubectl /usr/bin/kubectl || true
   fi
 
-  mkdir -p "${GITLAB_DIR}" "${MYSQL_DIR}" "${PHPMYADMIN_DIR}" "${DATAVIEWER_DIR}" "${K8S_DIR}"
+  sudo mkdir -p "${GITLAB_DIR}" "${MYSQL_DIR}" "${PHPMYADMIN_DIR}" "${DATAVIEWER_DIR}" "${K8S_DIR}"
 }
 
 ### ========= AWX via Operator on k3s =========
