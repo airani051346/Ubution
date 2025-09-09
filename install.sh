@@ -1,318 +1,165 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-### ========= Config (override via env as needed) =========
-AWX_NAMESPACE="${AWX_NAMESPACE:-awx}"
-AWX_NAME="${AWX_NAME:-awx}"
-AWX_NODEPORT="${AWX_NODEPORT:-30080}"     # AWX HTTP -> http://<host>:30080 (proxied at :4446)
+### ===== Config (override via env before running) =====
+# GitLab (host apps)
+GITLAB_HTTP_BACKEND_PORT="${GITLAB_HTTP_BACKEND_PORT:-8080}"  # GitLab Omnibus internal HTTP (127.0.0.1)
+GITLAB_TLS_PORT="${GITLAB_TLS_PORT:-4443}"
+
+# MySQL (host apps)
+MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-ChangeMe_MySQL!123}"
+MYSQL_APP_DB="${MYSQL_APP_DB:-appdb}"
+MYSQL_APP_USER="${MYSQL_APP_USER:-appuser}"
+MYSQL_APP_PASS="${MYSQL_APP_PASS:-ChangeMe_App!123}"
+
+# Data viewer (host app)
+DATAVIEWER_DIR="/opt/data-viewer"
+DATAVIEWER_BIND_IP="127.0.0.1"
+DATAVIEWER_BIND_PORT="${DATAVIEWER_BIND_PORT:-8002}"
+DATAVIEWER_TLS_PORT="${DATAVIEWER_TLS_PORT:-4445}"
+
+# phpMyAdmin (host app via Nginx+PHP-FPM)
+PHPMYADMIN_TLS_PORT="${PHPMYADMIN_TLS_PORT:-4444}"
+
+# AWX (only component in Docker)
+AWX_DIR="/opt/awx-docker"
+AWX_WEB_PORT_INTERNAL="${AWX_WEB_PORT_INTERNAL:-8052}"  # inside docker bind on 127.0.0.1:8052
+AWX_TLS_PORT="${AWX_TLS_PORT:-4446}"
 AWX_ADMIN_USER="${AWX_ADMIN_USER:-admin}"
 AWX_ADMIN_PASS="${AWX_ADMIN_PASS:-ChangeMe_AWX!123}"
+AWX_POSTGRES_USER="${AWX_POSTGRES_USER:-awx}"
+AWX_POSTGRES_PASS="${AWX_POSTGRES_PASS:-AwxDbPass!123}"
+AWX_POSTGRES_DB="${AWX_POSTGRES_DB:-awx}"
 
-# GitLab container ports (behind TLS proxy)
-GITLAB_HTTP_PORT="${GITLAB_HTTP_PORT:-8080}"
-GITLAB_HTTPS_PORT="${GITLAB_HTTPS_PORT:-8443}"  # unused (TLS at proxy)
-GITLAB_SSH_PORT="${GITLAB_SSH_PORT:-2222}"
+# TLS
+TLS_CN="${TLS_CN:-}"   # default set to host IP later
 
-# MySQL + phpMyAdmin + demo app
-MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-ChangeMe_MySQL!123}"
-MYSQL_DB="${MYSQL_DB:-appdb}"
-MYSQL_USER="${MYSQL_USER:-appuser}"
-MYSQL_PASS="${MYSQL_PASS:-ChangeMe_App!123}"
-PHPMYADMIN_PORT="${PHPMYADMIN_PORT:-8081}"      # proxied at :4444
-DATAVIEWER_PORT="${DATAVIEWER_PORT:-8082}"      # proxied at :4445
+### ===== Helpers =====
+say(){ echo -e "\e[1;32m[+]\e[0m $*"; }
+warn(){ echo -e "\e[1;33m[!]\e[0m $*"; }
+die(){ echo -e "\e[1;31m[x]\e[0m $*"; exit 1; }
+need(){ command -v "$1" >/dev/null 2>&1; }
 
-# HTTPS reverse proxy (self-signed cert)
-TLS_GITLAB_PORT="${TLS_GITLAB_PORT:-4443}"
-TLS_PHPMYADMIN_PORT="${TLS_PHPMYADMIN_PORT:-4444}"
-TLS_APP_PORT="${TLS_APP_PORT:-4445}"
-TLS_AWX_PORT="${TLS_AWX_PORT:-4446}"
-TLS_CN="${TLS_CN:-}"
-
-# Paths
-BASE_DIR="/opt/stack"
-COMPOSE_DIR="${BASE_DIR}/compose"
-GITLAB_DIR="${COMPOSE_DIR}/gitlab"
-MYSQL_DIR="${COMPOSE_DIR}/mysql"
-PHPMYADMIN_DIR="${COMPOSE_DIR}/phpmyadmin"
-DATAVIEWER_DIR="${COMPOSE_DIR}/data-viewer"
-NGINX_DIR="${COMPOSE_DIR}/nginx"
-K8S_DIR="${BASE_DIR}/k8s"
-
-### ========= Helpers =========
-need_cmd() { command -v "$1" >/dev/null 2>&1; }
-say() { echo -e "\e[1;32m[+]\e[0m $*"; }
-warn() { echo -e "\e[1;33m[!]\e[0m $*"; }
-die() { echo -e "\e[1;31m[x]\e[0m $*"; exit 1; }
-
-detect_host_ip() {
-  local ip=""
+host_ip() {
+  local ip
   ip="$(hostname -I 2>/dev/null | awk '{print $1}')" || true
   [[ -z "$ip" ]] && ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')" || true
   [[ -z "$ip" ]] && ip="127.0.0.1"
   echo "$ip"
 }
 
-require_ubuntu() {
-  if ! [ -f /etc/os-release ]; then die "Unsupported OS (no /etc/os-release)"; fi
-  . /etc/os-release
-  if [[ "${ID}" != "ubuntu" ]]; then
-    warn "This script targets Ubuntu. Detected: ${PRETTY_NAME}"
-  fi
-}
+trap 'warn "Something failed. Fix the error above, then re-run — the script is mostly idempotent."' ERR
 
-sudo_test() {
-  if ! sudo -n true 2>/dev/null; then
-    say "Requesting sudo privileges once…"
-    sudo -v
-  fi
-}
+### ===== System prep =====
+say "Installing base packages…"
+sudo apt-get update -y
+sudo apt-get install -y ca-certificates curl gnupg lsb-release apt-transport-https \
+  software-properties-common git jq ufw \
+  nginx openssl \
+  mysql-server \
+  php-fpm php-mysql php-zip php-gd php-curl php-mbstring php-xml php-bcmath php-intl php-cli php-json php-common \
+  debconf-utils
 
-# Docker wrapper that falls back to sudo if current shell isn't in docker group yet
-docker_exec() {
-  if docker info >/dev/null 2>&1; then
-    docker "$@"
-  elif sudo -n docker info >/dev/null 2>&1; then
-    sudo docker "$@"
-  else
-    echo "[x] Docker not accessible (group not active). Open a new shell OR use: sudo docker $*"
-    return 1
-  fi
-}
+# Detect PHP-FPM socket
+PHPFPM_SOCK="$(ls /run/php/php*-fpm.sock 2>/dev/null | head -n1 || true)"
+if [[ -z "$PHPFPM_SOCK" ]]; then
+  # Fallback: try service restart and check again
+  sudo systemctl restart php*-fpm || true
+  PHPFPM_SOCK="$(ls /run/php/php*-fpm.sock 2>/dev/null | head -n1 || true)"
+fi
+[[ -z "$PHPFPM_SOCK" ]] && die "Could not find PHP-FPM socket under /run/php. Is php-fpm installed?"
 
-trap 'warn "Something failed. Fix it and re-run — script is mostly idempotent."' ERR
+### ===== Install GitLab CE (Omnibus) =====
+say "Installing GitLab CE (Omnibus)…"
+if ! dpkg -l | grep -q '^ii\s\+gitlab-ce\s'; then
+  # Add official GitLab CE repo (packages.gitlab.com)
+  curl -fsSL https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh | sudo bash
+  # Precreate config directory to drop gitlab.rb before first reconfigure
+  sudo mkdir -p /etc/gitlab
+fi
 
-### ========= System prep =========
-system_prep() {
-  say "Updating apt and installing base tools…"
-  sudo apt-get update -y
-  sudo apt-get install -y ca-certificates curl gnupg lsb-release apt-transport-https jq git openssl
+HOST_IP="$(host_ip)"
+: "${TLS_CN:=$HOST_IP}"
 
-  # Docker Engine + compose plugin
-  if ! need_cmd docker; then
-    say "Installing Docker Engine…"
-    sudo install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --yes --dearmor -o /etc/apt/keyrings/docker.gpg
-    echo \
-      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release; echo $VERSION_CODENAME) stable" \
-      | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-    sudo apt-get update -y
-    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    sudo usermod -aG docker "$USER" || true
-  else
-    say "Docker already installed."
-  fi
-
-  docker_exec compose version >/dev/null 2>&1 || sudo apt-get install -y docker-compose-plugin
-
-  # Helm
-  if ! need_cmd helm; then
-    say "Installing Helm…"
-    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-  else
-    say "Helm already installed."
-  fi
-
-  # k3s (Kubernetes)
-  if ! systemctl is-active --quiet k3s; then
-    say "Installing k3s (lightweight Kubernetes)…"
-    curl -sfL https://get.k3s.io | sudo INSTALL_K3S_EXEC="--write-kubeconfig-mode 644" sh -
-  else
-    say "k3s already running."
-  fi
-
-  need_cmd kubectl || sudo ln -sf /usr/local/bin/kubectl /usr/bin/kubectl || true
-
-  # Create dirs; hand ownership to current user
-  sudo mkdir -p "${GITLAB_DIR}/config" "${GITLAB_DIR}/logs" "${GITLAB_DIR}/data" \
-               "${MYSQL_DIR}/data" "${MYSQL_DIR}/init" \
-               "${PHPMYADMIN_DIR}" "${DATAVIEWER_DIR}" "${NGINX_DIR}/certs" "${K8S_DIR}"
-  sudo chown -R "$USER":"$USER" "${BASE_DIR}"
-}
-
-### ========= k3s readiness =========
-wait_for_k3s() {
-  export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-  say "Waiting for k3s API to be ready…"
-  for _ in {1..120}; do
-    if kubectl get --raw=/readyz 2>/dev/null | grep -q ok; then
-      say "k3s API is ready."
-      kubectl get nodes -o wide || true
-      return 0
-    fi
-    sleep 2
-  done
-  die "k3s API not ready after ~4 minutes."
-}
-
-### ========= AWX via Operator on k3s =========
-deploy_awx() {
-  say "Setting up AWX Operator via Helm (namespace: ${AWX_NAMESPACE})…"
-  helm repo add awx-operator https://ansible-community.github.io/awx-operator-helm >/dev/null 2>&1 || true
-  helm repo update >/dev/null 2>&1
-  helm upgrade --install ansible-awx-operator awx-operator/awx-operator -n "${AWX_NAMESPACE}" --create-namespace
-
-  # Admin password secret
-  cat > "${K8S_DIR}/awx-admin-secret.yaml" <<EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ${AWX_NAME}-admin-password
-  namespace: ${AWX_NAMESPACE}
-type: Opaque
-stringData:
-  password: "${AWX_ADMIN_PASS}"
-EOF
-  kubectl apply -f "${K8S_DIR}/awx-admin-secret.yaml"
-
-  # AWX Custom Resource (NodePort)
-  cat > "${K8S_DIR}/awx.yaml" <<EOF
-apiVersion: awx.ansible.com/v1beta1
-kind: AWX
-metadata:
-  name: ${AWX_NAME}
-  namespace: ${AWX_NAMESPACE}
-spec:
-  admin_user: ${AWX_ADMIN_USER}
-  admin_password_secret: ${AWX_NAME}-admin-password
-  service_type: NodePort
-  nodeport_port: ${AWX_NODEPORT}
-  ingress_type: none
-EOF
-  kubectl apply -f "${K8S_DIR}/awx.yaml"
-
-  say "Waiting for AWX operator deployment rollout…"
-  kubectl -n "${AWX_NAMESPACE}" rollout status deployment/awx-operator-controller-manager --timeout=300s || true
-
-  for _ in {1..120}; do
-    kubectl -n "${AWX_NAMESPACE}" get svc "${AWX_NAME}-service" >/dev/null 2>&1 && { say "AWX service detected."; break; }
-    sleep 5
-  done
-}
-
-### ========= Compose stack (GitLab + MySQL + phpMyAdmin + data-viewer + Nginx TLS) =========
-write_compose_and_configs() {
-  say "Generating configs (compose, app, MySQL init, Nginx TLS, GitLab config)…"
-  HOST_IP="$(detect_host_ip)"
-  [[ -z "${TLS_CN}" ]] && TLS_CN="${HOST_IP}"
-
-  # docker-compose.yml
-  cat > "${COMPOSE_DIR}/docker-compose.yml" <<'EOF'
-services:
-  gitlab:
-    image: gitlab/gitlab-ce:latest
-    restart: unless-stopped
-    hostname: gitlab.local
-    ports:
-      - "${GITLAB_HTTP_PORT}:80"
-      - "${GITLAB_HTTPS_PORT}:443"
-      - "${GITLAB_SSH_PORT}:22"
-    volumes:
-      - ./gitlab/config:/etc/gitlab
-      - ./gitlab/logs:/var/log/gitlab
-      - ./gitlab/data:/var/opt/gitlab
-    shm_size: '1g'
-
-  mysql:
-    image: mysql:8.4
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD}"
-      MYSQL_DATABASE: "${MYSQL_DB}"
-      MYSQL_USER: "${MYSQL_USER}"
-      MYSQL_PASSWORD: "${MYSQL_PASS}"
-    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
-    volumes:
-      - ./mysql/data:/var/lib/mysql
-      - ./mysql/init:/docker-entrypoint-initdb.d
-    ports:
-      - "3306:3306"
-
-  phpmyadmin:
-    image: phpmyadmin:latest
-    restart: unless-stopped
-    depends_on:
-      - mysql
-    environment:
-      PMA_HOST: mysql
-      PMA_ABSOLUTE_URI: "__PMA_URI__"
-    ports:
-      - "${PHPMYADMIN_PORT}:80"
-
-  data-viewer:
-    build:
-      context: ./data-viewer
-    restart: unless-stopped
-    depends_on:
-      - mysql
-    environment:
-      DB_HOST: mysql
-      DB_NAME: "${MYSQL_DB}"
-      DB_USER: "${MYSQL_USER}"
-      DB_PASS: "${MYSQL_PASS}"
-    ports:
-      - "${DATAVIEWER_PORT}:8080"
-
-  nginx:
-    image: nginx:alpine
-    restart: unless-stopped
-    network_mode: "host"
-    depends_on:
-      - gitlab
-      - phpmyadmin
-      - data-viewer
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
-EOF
-
-  # .env for compose interpolation
-  cat > "${COMPOSE_DIR}/.env" <<EOF
-GITLAB_HTTP_PORT=${GITLAB_HTTP_PORT}
-GITLAB_HTTPS_PORT=${GITLAB_HTTPS_PORT}
-GITLAB_SSH_PORT=${GITLAB_SSH_PORT}
-
-MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
-MYSQL_DB=${MYSQL_DB}
-MYSQL_USER=${MYSQL_USER}
-MYSQL_PASS=${MYSQL_PASS}
-
-PHPMYADMIN_PORT=${PHPMYADMIN_PORT}
-DATAVIEWER_PORT=${DATAVIEWER_PORT}
-
-TLS_GITLAB_PORT=${TLS_GITLAB_PORT}
-TLS_PHPMYADMIN_PORT=${TLS_PHPMYADMIN_PORT}
-TLS_APP_PORT=${TLS_APP_PORT}
-TLS_AWX_PORT=${TLS_AWX_PORT}
-EOF
-
-  # Replace PMA_ABSOLUTE_URI with the actual HTTPS URL
-  sed -i "s|__PMA_URI__|https://${HOST_IP}:${TLS_PHPMYADMIN_PORT}/|g" "${COMPOSE_DIR}/docker-compose.yml"
-
-  # GitLab config: set external_url to our HTTPS port (4443) and trust proxy
-  cat > "${GITLAB_DIR}/config/gitlab.rb" <<EOF
-external_url "https://${HOST_IP}:${TLS_GITLAB_PORT}"
+# Configure GitLab to listen on localhost:${GITLAB_HTTP_BACKEND_PORT} and generate HTTPS links at :4443
+sudo tee /etc/gitlab/gitlab.rb >/dev/null <<EOF
+external_url "https://${HOST_IP}:${GITLAB_TLS_PORT}"
 nginx['listen_https'] = false
-nginx['listen_port']  = 80
+nginx['listen_port']  = ${GITLAB_HTTP_BACKEND_PORT}
+nginx['listen_addresses'] = ["127.0.0.1"]
 letsencrypt['enable'] = false
-gitlab_rails['gitlab_shell_ssh_port'] = ${GITLAB_SSH_PORT}
 gitlab_rails['gitlab_https'] = true
 gitlab_rails['trusted_proxies'] = ['127.0.0.1']
+# Keep SSH on default host port 22 unless you prefer another; GitLab will advertise the correct port if changed:
+# gitlab_rails['gitlab_shell_ssh_port'] = 22
 EOF
 
-  # MySQL init to allow remote root login
-  cat > "${MYSQL_DIR}/init/01-remote-root.sql" <<EOF
-CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
-ALTER USER 'root'@'%' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASSWORD}';
+# Install/ensure package present then reconfigure
+sudo apt-get install -y gitlab-ce
+sudo gitlab-ctl reconfigure
+
+### ===== MySQL server config + users =====
+say "Configuring MySQL server…"
+# Ensure MySQL binds on all interfaces (so remote is possible)
+sudo sed -i 's/^\s*bind-address\s*=.*/bind-address = 0.0.0.0/' /etc/mysql/mysql.conf.d/mysqld.cnf || true
+
+sudo systemctl enable --now mysql
+
+# Secure and create users/db (idempotent)
+MYSQL_SECURE_SQL=$(cat <<SQL
+ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASSWORD}';
+CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASSWORD}';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+CREATE DATABASE IF NOT EXISTS \`${MYSQL_APP_DB}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${MYSQL_APP_USER}'@'%' IDENTIFIED BY '${MYSQL_APP_PASS}';
+GRANT ALL PRIVILEGES ON \`${MYSQL_APP_DB}\`.* TO '${MYSQL_APP_USER}'@'%';
 FLUSH PRIVILEGES;
+SQL
+)
+sudo mysql -e "$MYSQL_SECURE_SQL" || true
+sudo systemctl restart mysql
+
+### ===== phpMyAdmin (host) =====
+say "Installing phpMyAdmin…"
+# Preseed debconf to avoid Apache auto-config
+echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect" | sudo debconf-set-selections
+echo "phpmyadmin phpmyadmin/dbconfig-install boolean false"    | sudo debconf-set-selections
+sudo apt-get install -y phpmyadmin
+
+# Nginx server for phpMyAdmin over TLS :4444
+sudo tee /etc/nginx/sites-available/phpmyadmin.conf >/dev/null <<EOF
+server {
+    listen ${PHPMYADMIN_TLS_PORT} ssl;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/selfsigned/fullchain.crt;
+    ssl_certificate_key /etc/nginx/selfsigned/privkey.key;
+
+    root /usr/share/phpmyadmin;
+    index index.php index.html;
+
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:${PHPFPM_SOCK};
+    }
+
+    location / {
+        try_files \$uri /index.php?\$query_string;
+    }
+}
 EOF
 
-  # Flask demo app
-  cat > "${DATAVIEWER_DIR}/app.py" <<'EOF'
+### ===== Data Viewer (host) =====
+say "Installing data-viewer (Flask) as a systemd service…"
+sudo apt-get install -y python3-venv python3-pip
+sudo mkdir -p "$DATAVIEWER_DIR"
+sudo chown -R "$USER":"$USER" "$DATAVIEWER_DIR"
+
+cat > "${DATAVIEWER_DIR}/app.py" <<'EOF'
 import os, pymysql
 from flask import Flask, render_template_string
 
-DB_HOST=os.getenv("DB_HOST","mysql")
+DB_HOST=os.getenv("DB_HOST","127.0.0.1")
 DB_NAME=os.getenv("DB_NAME","appdb")
 DB_USER=os.getenv("DB_USER","appuser")
 DB_PASS=os.getenv("DB_PASS","password")
@@ -371,201 +218,223 @@ def init():
     return "Initialized. <a href='/'>Back</a>"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run()
 EOF
 
-  cat > "${DATAVIEWER_DIR}/requirements.txt" <<'EOF'
-flask
-pymysql
+python3 -m venv "${DATAVIEWER_DIR}/venv"
+"${DATAVIEWER_DIR}/venv/bin/pip" install --no-cache-dir flask pymysql gunicorn
+
+# Systemd service (Gunicorn bound to 127.0.0.1:8002)
+sudo tee /etc/systemd/system/data-viewer.service >/dev/null <<EOF
+[Unit]
+Description=Data Viewer Flask App
+After=network.target
+
+[Service]
+User=${USER}
+WorkingDirectory=${DATAVIEWER_DIR}
+Environment=DB_HOST=127.0.0.1
+Environment=DB_NAME=${MYSQL_APP_DB}
+Environment=DB_USER=${MYSQL_APP_USER}
+Environment=DB_PASS=${MYSQL_APP_PASS}
+ExecStart=${DATAVIEWER_DIR}/venv/bin/gunicorn -b ${DATAVIEWER_BIND_IP}:${DATAVIEWER_BIND_PORT} app:app
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-  cat > "${DATAVIEWER_DIR}/Dockerfile" <<'EOF'
-FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py .
-EXPOSE 8080
-CMD ["python", "app.py"]
-EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now data-viewer
 
-  # Nginx TLS: cert + config
-  mkdir -p "${NGINX_DIR}/certs"
-  openssl req -x509 -nodes -newkey rsa:4096 -days 365 \
-    -keyout "${NGINX_DIR}/certs/selfsigned.key" \
-    -out "${NGINX_DIR}/certs/selfsigned.crt" \
-    -subj "/CN=${TLS_CN:-$HOST_IP}" >/dev/null 2>&1
-
-  cat > "${NGINX_DIR}/nginx.conf" <<EOF
-events {}
-http {
-  ssl_session_cache shared:SSL:10m;
-  ssl_session_timeout 10m;
-
-  map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
-
-  # GitLab (HTTPS :${TLS_GITLAB_PORT} -> http://127.0.0.1:${GITLAB_HTTP_PORT})
-  server {
-    listen ${TLS_GITLAB_PORT} ssl;
+# Nginx server for data-viewer :4445
+sudo tee /etc/nginx/sites-available/data-viewer.conf >/dev/null <<EOF
+server {
+    listen ${DATAVIEWER_TLS_PORT} ssl;
     server_name _;
 
-    ssl_certificate     /etc/nginx/certs/selfsigned.crt;
-    ssl_certificate_key /etc/nginx/certs/selfsigned.key;
+    ssl_certificate     /etc/nginx/selfsigned/fullchain.crt;
+    ssl_certificate_key /etc/nginx/selfsigned/privkey.key;
 
     location / {
-      proxy_pass http://127.0.0.1:${GITLAB_HTTP_PORT};
-
-      proxy_set_header Host              \$host:\$server_port;
-      proxy_set_header X-Forwarded-Host  \$host:\$server_port;
-      proxy_set_header X-Real-IP         \$remote_addr;
-      proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto https;
-      proxy_set_header X-Forwarded-Ssl   on;
-      proxy_set_header X-Forwarded-Port  \$server_port;
-
-      client_max_body_size 0;
-      proxy_read_timeout 300s;
+        proxy_pass http://${DATAVIEWER_BIND_IP}:${DATAVIEWER_BIND_PORT};
+        proxy_set_header Host \$host:\$server_port;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
     }
-  }
-
-  # phpMyAdmin (HTTPS :${TLS_PHPMYADMIN_PORT} -> http://127.0.0.1:${PHPMYADMIN_PORT})
-  server {
-    listen ${TLS_PHPMYADMIN_PORT} ssl;
-    server_name _;
-
-    ssl_certificate     /etc/nginx/certs/selfsigned.crt;
-    ssl_certificate_key /etc/nginx/certs/selfsigned.key;
-
-    location / {
-      proxy_pass http://127.0.0.1:${PHPMYADMIN_PORT};
-      proxy_set_header Host \$host:\$server_port;
-      proxy_set_header X-Forwarded-Proto https;
-      proxy_set_header X-Forwarded-Port  \$server_port;
-    }
-  }
-
-  # Data Viewer (HTTPS :${TLS_APP_PORT} -> http://127.0.0.1:${DATAVIEWER_PORT})
-  server {
-    listen ${TLS_APP_PORT} ssl;
-    server_name _;
-
-    ssl_certificate     /etc/nginx/certs/selfsigned.crt;
-    ssl_certificate_key /etc/nginx/certs/selfsigned.key;
-
-    location / {
-      proxy_pass http://127.0.0.1:${DATAVIEWER_PORT};
-      proxy_set_header Host \$host:\$server_port;
-      proxy_set_header X-Forwarded-Proto https;
-      proxy_set_header X-Forwarded-Port  \$server_port;
-    }
-  }
-
-  # AWX (HTTPS :${TLS_AWX_PORT} -> http://127.0.0.1:${AWX_NODEPORT})
-  server {
-    listen ${TLS_AWX_PORT} ssl;
-    server_name _;
-
-    ssl_certificate     /etc/nginx/certs/selfsigned.crt;
-    ssl_certificate_key /etc/nginx/certs/selfsigned.key;
-
-    location / {
-      proxy_pass http://127.0.0.1:${AWX_NODEPORT};
-      proxy_set_header Host \$host:\$server_port;
-      proxy_set_header X-Forwarded-Proto https;
-      proxy_set_header X-Forwarded-Port  \$server_port;
-      proxy_read_timeout 300s;
-    }
-  }
 }
 EOF
+
+### ===== Docker (AWX only) =====
+say "Installing Docker Engine (for AWX only)…"
+if ! need docker; then
+  sudo install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release; echo $VERSION_CODENAME) stable" \
+    | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+  sudo apt-get update -y
+  sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  sudo usermod -aG docker "$USER" || true
+fi
+
+say "Preparing AWX docker-compose…"
+sudo mkdir -p "$AWX_DIR"
+sudo chown -R "$USER":"$USER" "$AWX_DIR"
+
+cat > "${AWX_DIR}/docker-compose.yml" <<EOF
+services:
+  postgres:
+    image: postgres:13
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${AWX_POSTGRES_DB}
+      POSTGRES_USER: ${AWX_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${AWX_POSTGRES_PASS}
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:6-alpine
+    restart: unless-stopped
+
+  awx:
+    image: quay.io/ansible/awx:latest
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    environment:
+      SECRET_KEY: "$(openssl rand -hex 32)"
+      DATABASE_USER: ${AWX_POSTGRES_USER}
+      DATABASE_PASSWORD: ${AWX_POSTGRES_PASS}
+      DATABASE_NAME: ${AWX_POSTGRES_DB}
+      DATABASE_HOST: postgres
+      REDIS_HOST: redis
+      AWX_ADMIN_USER: ${AWX_ADMIN_USER}
+      AWX_ADMIN_PASSWORD: ${AWX_ADMIN_PASS}
+      AWX_ALLOWED_HOSTS: "*"
+    ports:
+      - "127.0.0.1:${AWX_WEB_PORT_INTERNAL}:8052"
+    volumes:
+      - ./awx_projects:/var/lib/awx/projects
+EOF
+
+# Bring up AWX stack
+( cd "$AWX_DIR" && sudo docker compose up -d )
+
+### ===== Nginx TLS (self-signed) and proxy for GitLab & AWX =====
+say "Configuring Nginx TLS reverse proxy…"
+sudo mkdir -p /etc/nginx/selfsigned
+if [[ ! -f /etc/nginx/selfsigned/privkey.key ]]; then
+  sudo openssl req -x509 -nodes -newkey rsa:4096 -days 365 \
+    -keyout /etc/nginx/selfsigned/privkey.key \
+    -out /etc/nginx/selfsigned/fullchain.crt \
+    -subj "/CN=${TLS_CN}" >/dev/null 2>&1
+fi
+
+# GitLab proxy :4443 -> 127.0.0.1:${GITLAB_HTTP_BACKEND_PORT}
+sudo tee /etc/nginx/sites-available/gitlab_proxy.conf >/dev/null <<EOF
+server {
+    listen ${GITLAB_TLS_PORT} ssl;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/selfsigned/fullchain.crt;
+    ssl_certificate_key /etc/nginx/selfsigned/privkey.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:${GITLAB_HTTP_BACKEND_PORT};
+        proxy_set_header Host              \$host:\$server_port;
+        proxy_set_header X-Forwarded-Host  \$host:\$server_port;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Ssl   on;
+        proxy_set_header X-Forwarded-Port  \$server_port;
+        client_max_body_size 0;
+        proxy_read_timeout 300s;
+    }
 }
+EOF
 
-bring_up_compose() {
-  say "Starting Docker services (GitLab, MySQL, phpMyAdmin, data-viewer, Nginx TLS)…"
-  pushd "${COMPOSE_DIR}" >/dev/null
-  docker_exec compose build --no-cache data-viewer
-  docker_exec compose up -d
-  popd >/dev/null
+# AWX proxy :4446 -> 127.0.0.1:${AWX_WEB_PORT_INTERNAL}
+sudo tee /etc/nginx/sites-available/awx_proxy.conf >/dev/null <<EOF
+server {
+    listen ${AWX_TLS_PORT} ssl;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/selfsigned/fullchain.crt;
+    ssl_certificate_key /etc/nginx/selfsigned/privkey.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:${AWX_WEB_PORT_INTERNAL};
+        proxy_set_header Host \$host:\$server_port;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    }
 }
+EOF
 
-wait_for_gitlab_and_show_password() {
-  HOST_IP="$(detect_host_ip)"
+# Enable Nginx sites
+sudo ln -sf /etc/nginx/sites-available/gitlab_proxy.conf   /etc/nginx/sites-enabled/gitlab_proxy.conf
+sudo ln -sf /etc/nginx/sites-available/awx_proxy.conf      /etc/nginx/sites-enabled/awx_proxy.conf
+sudo ln -sf /etc/nginx/sites-available/phpmyadmin.conf     /etc/nginx/sites-enabled/phpmyadmin.conf
+sudo ln -sf /etc/nginx/sites-available/data-viewer.conf    /etc/nginx/sites-enabled/data-viewer.conf
+# default site can stay or be disabled:
+sudo rm -f /etc/nginx/sites-enabled/default || true
 
-  say "Waiting for GitLab to be reachable at https://${HOST_IP}:${TLS_GITLAB_PORT} …"
-  # Wait up to ~10 minutes (GitLab can be heavy on first run)
-  for _ in {1..120}; do
-    if curl -skf "https://${HOST_IP}:${TLS_GITLAB_PORT}/users/sign_in" >/dev/null 2>&1; then
-      say "GitLab web is up."
-      break
-    fi
-    sleep 5
-  done
+sudo nginx -t
+sudo systemctl enable --now nginx
 
-  # Ensure GitLab applies our config (safe to run anytime)
-  docker_exec exec compose-gitlab-1 gitlab-ctl reconfigure >/dev/null 2>&1 || true
+### ===== Firewall (optional: open TLS ports) =====
+if need ufw; then
+  sudo ufw allow "${GITLAB_TLS_PORT}/tcp" || true
+  sudo ufw allow "${PHPMYADMIN_TLS_PORT}/tcp" || true
+  sudo ufw allow "${DATAVIEWER_TLS_PORT}/tcp" || true
+  sudo ufw allow "${AWX_TLS_PORT}/tcp" || true
+fi
 
-  # Try to fetch the initial root password with retries
-  local pw=""
-  for _ in {1..30}; do
-    pw="$(docker_exec exec -i compose-gitlab-1 sh -lc "grep 'Password:' /etc/gitlab/initial_root_password 2>/dev/null | awk '{print \$2}'")" || true
-    [[ -n "$pw" ]] && break
-    sleep 5
-  done
-
-  if [[ -z "$pw" ]]; then
-    GITLAB_INITIAL_PW="(not found — may be expired; set one with: sudo docker exec -it compose-gitlab-1 gitlab-rake \"gitlab:password:reset[root]\")"
-  else
-    GITLAB_INITIAL_PW="$pw"
+### ===== Wait for services and show credentials =====
+say "Waiting for GitLab web to respond on https://${HOST_IP}:${GITLAB_TLS_PORT}…"
+for _ in {1..120}; do
+  if curl -skf "https://${HOST_IP}:${GITLAB_TLS_PORT}/users/sign_in" >/dev/null 2>&1; then
+    say "GitLab is up."
+    break
   fi
-  export GITLAB_INITIAL_PW
-}
+  sleep 3
+done
 
-### ========= Post-install info =========
-print_info() {
-  HOST_IP="$(detect_host_ip)"
+# Read GitLab initial root password (best-effort)
+GITLAB_INITIAL_PW="(not yet available)"
+if [[ -f /etc/gitlab/initial_root_password ]]; then
+  GITLAB_INITIAL_PW="$(grep 'Password:' /etc/gitlab/initial_root_password | awk '{print $2}')" || true
+fi
+[[ -z "${GITLAB_INITIAL_PW}" ]] && GITLAB_INITIAL_PW="(expired or not found; set via: sudo gitlab-rake \"gitlab:password:reset[root]\")"
 
-  say "Done! Endpoints (HTTPS via self-signed cert):"
-  cat <<EOF
+say "Done! Endpoints (self-signed TLS; accept the warning):"
+cat <<EOF
 
 GitLab:
-  URL:  https://${HOST_IP}:${TLS_GITLAB_PORT}
-  SSH:  ssh -p ${GITLAB_SSH_PORT} git@${HOST_IP}
+  URL:  https://${HOST_IP}:${GITLAB_TLS_PORT}
   Initial root password: ${GITLAB_INITIAL_PW}
 
 phpMyAdmin:
-  URL:  https://${HOST_IP}:${TLS_PHPMYADMIN_PORT}
-  MySQL root login is enabled remotely (root / ${MYSQL_ROOT_PASSWORD})
+  URL:  https://${HOST_IP}:${PHPMYADMIN_TLS_PORT}
+  Login: root / ${MYSQL_ROOT_PASSWORD}
+  (Remote root is enabled; MySQL listening 0.0.0.0:3306)
 
 Data Viewer:
-  URL:  https://${HOST_IP}:${TLS_APP_PORT}
-  Visit /init once to create a demo table.
+  URL:  https://${HOST_IP}:${DATAVIEWER_TLS_PORT}
+  After first open, visit /init once to create demo table.
 
 AWX:
-  URL:  https://${HOST_IP}:${TLS_AWX_PORT}
-  User: ${AWX_ADMIN_USER}
-  Pass: (what you set) or fetch with:
-        kubectl get secret -n ${AWX_NAMESPACE} ${AWX_NAME}-admin-password -o jsonpath="{.data.password}" | base64 --decode; echo
+  URL:  https://${HOST_IP}:${AWX_TLS_PORT}
+  Login: ${AWX_ADMIN_USER} / ${AWX_ADMIN_PASS}
 
-Files live under:
-  ${COMPOSE_DIR}
-  ${K8S_DIR}
-
-Note: Browser will warn about the self-signed certificate (expected).
-If you were just added to the 'docker' group, open a new terminal or run 'newgrp docker' to use Docker without sudo.
+Files/dirs:
+  AWX docker-compose:   ${AWX_DIR}
+  Data viewer app:      ${DATAVIEWER_DIR}
+  Nginx sites:          /etc/nginx/sites-available/*.conf
+  GitLab config:        /etc/gitlab/gitlab.rb
+  phpMyAdmin root:      /usr/share/phpmyadmin
 EOF
-}
-
-### ========= Run all =========
-main() {
-  require_ubuntu
-  sudo_test
-  system_prep
-  wait_for_k3s
-  deploy_awx
-  write_compose_and_configs
-  bring_up_compose
-  wait_for_gitlab_and_show_password
-  print_info
-}
-
-main "$@"
