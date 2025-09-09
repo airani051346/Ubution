@@ -220,7 +220,7 @@ services:
       MYSQL_DATABASE: "${MYSQL_DB}"
       MYSQL_USER: "${MYSQL_USER}"
       MYSQL_PASSWORD: "${MYSQL_PASS}"
-    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    command: ["mysqld","--character-set-server=utf8mb4","--collation-server=utf8mb4_0900_ai_ci"]
     volumes:
       - ./mysql/data:/var/lib/mysql
       - ./mysql/init:/docker-entrypoint-initdb.d
@@ -304,6 +304,13 @@ EOF
 CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
 ALTER USER 'root'@'%' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASSWORD}';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+EOF
+
+  # Force app user to mysql_native_password too (avoids caching_sha2 client issues)
+  cat > "${MYSQL_DIR}/init/02-appuser-native.sql" <<EOF
+ALTER USER IF EXISTS '${MYSQL_USER}'@'%' IDENTIFIED WITH mysql_native_password BY '${MYSQL_PASS}';
+ALTER USER IF EXISTS '${MYSQL_USER}'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_PASS}';
 FLUSH PRIVILEGES;
 EOF
 
@@ -483,6 +490,9 @@ EOF
 bring_up_compose() {
   say "Starting Docker services (GitLab, MySQL, phpMyAdmin, data-viewer, Nginx TLS)…"
   pushd "${COMPOSE_DIR}" >/dev/null
+
+  
+  
   docker_exec compose build --no-cache data-viewer
   docker_exec compose up -d
   popd >/dev/null
