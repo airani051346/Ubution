@@ -1,27 +1,27 @@
-#how to install:
+# how to install:
 set env variable for the installation session
 eg:
+```bash
    export AWX_ADMIN_PASS='myawxPassword'<br>
    export MYSQL_ROOT_PASSWORD='myMysqlRootPW'<br>
    export MYSQL_PASS='myMysqlAppPW'<br>
+   curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/install.sh | bash
+```
 
-#run following command to insall all necessary:<br>
-        curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/install.sh | bash
-
-#how to access GitLab::<br>
+# how to access GitLab::<br>
   URL:  https://<server-ip>:4443
   SSH:  ssh -p 2222 git@<server-ip>
   Initial root password: (will be shown after installlation)
 
-#how to access phpMyAdmin:<br> 
+# how to access phpMyAdmin:<br> 
   URL:  https://<server-ip>:4444
   MySQL root login is enabled remotely (root / zubur1RootPW)
 
-Data Viewer:
+# Data Viewer:
   URL:  https://<server-ip>:4445
   Visit /init once to create a demo table.
 
-#how to access AWX:<br>
+# how to access AWX:<br>
   URL:  https://<server-ip>:4446
   User: admin
   Pass: (what you set) or fetch with:
