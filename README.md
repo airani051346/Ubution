@@ -9,20 +9,20 @@ eg:
 ```
 
 # how to access GitLab::<br>
-  URL:  https://<server-ip>:4443
+  URL:  https://< server-ip >:4443
   SSH:  ssh -p 2222 git@<server-ip>
   Initial root password: (will be shown after installlation)
 
 # how to access phpMyAdmin:<br> 
-  URL:  https://<server-ip>:4444
+  URL:  https://< server-ip >:4444
   MySQL root login is enabled remotely (root / zubur1RootPW)
 
 # Data Viewer:
-  URL:  https://<server-ip>:4445
+  URL:  https://< server-ip >:4445
   Visit /init once to create a demo table.
 
 # how to access AWX:<br>
-  URL:  https://<server-ip>:4446
+  URL:  https://< server-ip >:4446
   User: admin
   Pass: (what you set) or fetch with:
         kubectl get secret -n awx awx-admin-password -o jsonpath="{.data.password}" | base64 --decode; echo
