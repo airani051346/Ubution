@@ -101,63 +101,97 @@ copy the private key on awx
 
 
 Wait for the project to synchronize: AWX will automatically synchronize the project with the Git repository. You can monitor the progress in the “Projects” tab.
-Creating a new inventory:
+# Creating a new inventory:
 o	Navigate to the “Inventories” tab and click “Add”.
 o	Name your inventory and define it as needed.
 o	In the inventory, you can add groups and hosts that will be the target of your Ansible playbooks.
-Creating a job template:
+# Creating a job template:
 o	Navigate to the “Templates” tab and click “Add” → “Job Template”.
 o	Name the template, select the project you created earlier, and the playbook you want to run.
 o	Select the inventory you will use.
 o	In the “Credentials” section, add the credentials necessary to connect to your servers (e.g., SSH keys).
 o	Save the template.
+# Add your own execution environment
 
+```bash
+mkdir ~/custim-ee && cd custim-ee
+vi execution-environment.yml
+```
 
-
-
+put following content in the execution-environment.yml file
+```text
 ---
-- name: Update all systems and restart if needed only if updates are available
-  hosts: all
-  become: yes
-  tasks:
-    # Preliminary checks for available updates
-    - name: Check for available updates (apt)
-      apt:
-        update_cache: yes
-        upgrade: 'no' # Just check for updates without installing
-        cache_valid_time: 3600 # Avoid unnecessary cache updates
-      register: apt_updates
-      changed_when: apt_updates.changed
-      when: ansible_facts['os_family'] == "Debian"
+version: 3
 
-    # Update systems based on the checks
-    # Debian-based systems update and restart
-    - name: Update apt systems if updates are available
-      ansible.builtin.apt:
-        update_cache: yes
-        upgrade: dist
-      when: ansible_facts['os_family'] == "Debian" and apt_updates.changed
+images:
+  base_image:
+    name: quay.io/ansible/awx-ee:latest
 
-    - name: Check if restart is needed on Debian based systems
-      stat:
-        path: /var/run/reboot-required
-      register: reboot_required_file
-      when: ansible_facts['os_family'] == "Debian" and apt_updates.changed
+dependencies:
+  ansible_core:
+    package_pip: ansible-core
+  ansible_runner:
+    package_pip: ansible-runner
+  python:
+    - setuptools
+    - psycopg2-binary
+    - gitpython
+    - pymysql
+    - mysql-connector-python
+    - requests
+    - netmiko
+    - pyats
+    - httpx
+    - beautifulsoup4
+    - lxml
+    - python-dateutil
+    - pytz
+    - pymongo
+    - cryptography
+    - bcrypt
+    - boto3
+    - azure-mgmt-resource
+    - azure-storage-blob
+    - pexpect
+    - paramiko-expect
+    - paramiko
+  galaxy:
+    collections:
+      - name: check_point.mgmt
+      - name: check_point.gaia
+      - name: ansible.netcommon
 
-    - name: Restart Debian based system if required
-      ansible.builtin.reboot:
-      when: ansible_facts['os_family'] == "Debian" and apt_updates.changed and reboot_required_file.stat.exists
+  system:
+    # base tools
+    - git
+    - sshpass
+    - docker
+    - subversion
+    # build deps to avoid source build failures (safe to include)
+    - gcc
+    - make
+    - python3-devel
+    - openssl-devel
+    - libffi-devel
+    - libxml2-devel
+    - libxslt-devel
+
+additional_build_steps:
+  # This runs in the *builder* stage, before /output/scripts/assemble
+  prepend_builder:
+    - RUN /usr/bin/python3 -m pip install --upgrade pip setuptools wheel
+    - RUN pip config set global.index-url https://pypi.org/simple
+    - RUN pip config set global.timeout 600
+    - RUN pip config set global.retries 5
+    - ENV PIP_DEFAULT_TIMEOUT=600
+    - ENV PIP_NO_CACHE_DIR=1
+
+```
+
+now run following command to create your run-time environment
+```bash
+ansible-builder build -t awx-ee:cp-gaia-mgmt   --container-runtime=docker  --build-arg PIP_DEFAULT_TIMEOUT=600
+```
 
 
-
-
-
-•	hosts: all: Specifies that the playbook will be run on all hosts defined in your inventory.
-•	become: yes: Elevates privileges to root (similar to sudo), which is required for package management.
-•	tasks: The section of tasks, where each task updates systems with different package managers depending on the operating system family.
-•	when: A condition that checks the type of operating system of the host to execute the appropriate update command.
-•	ansible.builtin.<module>: The Ansible module responsible for managing packages on different operating systems.
-•	stat module: Used to check for the presence of the /var/run/reboot-required file in Debian-based systems, which is created when an update requires a restart.
-•	reboot module: Triggers a system restart if needed. You can customize this module by adding parameters such as msg for the restart message, pre_reboot_delay for a delay before restarting, etc.
-•	register: Stores the result of the command or check in a variable that can later be used in conditions (when).
 
