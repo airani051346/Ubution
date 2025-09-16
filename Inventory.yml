@@ -1,0 +1,48 @@
+all:
+  vars:
+    
+  hosts:
+    cl1-gw1:
+      ansible_host: 2a04:6447:900:500::11
+    cl1-gw2:
+      ansible_host: 2a04:6447:900:500::12
+    cl2-gw1:
+      ansible_host: 2a04:6447:900:500::21
+    cl2-gw2:
+      ansible_host: 2a04:6447:900:500::22
+    vpn-gw-5:
+      ansible_host: 2a04:6447:900:100::50
+    vpn-gw-4:
+      ansible_host: 2a04:6447:900:100::40
+    vpn-gw-3:
+      ansible_host: 2a04:6447:900:100::30
+    vpn-gw-2:
+      ansible_host: 2a04:6447:900:100::20
+    vpn-gw-1:
+      ansible_host: 192.168.178.123
+      
+  children:
+    MT_GW:
+      hosts:
+        cl1-gw1:
+        cl1-gw2:
+        cl2-gw1:
+        cl2-gw2:
+        
+    spark:
+      vars: 
+        ansible_python_interpreter: "/bin/false"
+        ansible_transfer_method: scp
+        ansible_user: admin                 
+        # ansible_ssh_private_key_file: ~/.ssh/id_rsa
+        ansible_password: "zubur1"
+        expert_password: "zubur1"
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+
+      hosts:
+        vpn-gw-5:
+        vpn-gw-4:   
+        vpn-gw-3:   
+        vpn-gw-2:   
+        vpn-gw-1:   
+    

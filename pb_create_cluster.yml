@@ -1,0 +1,28 @@
+- name: Create Simple Cluster from DB (CLI args)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    mysql_host: "127.0.0.1"
+    api_user: "api_admin"
+    api_pass: "apipass"
+    db_host: "mysql"
+    db_user: "root"
+    db_pass: "mysqlpass"
+    db_name: "netvars"
+    cluster: "cl1"
+    cluster_members: ["cl1-gw1","cl1-gw2"]
+    enforce_member_of: false
+  tasks:
+    - name: Run cluster creation
+      ansible.builtin.command:
+        cmd: >
+          /opt/network_manager/create_cluster_from_db.py
+          --mgmt-url {{ mgmt_url }}
+          --api-user {{ api_user }} --api-pass {{ api_pass }} {% if insecure|default(true) %}--insecure{% endif %}
+          --db-host {{ db_host }} --db-user {{ db_user }} --db-pass {{ db_pass }} --db-name {{ db_name }}
+          --cluster {{ cluster }}
+          {% if cluster_members|length > 0 %}--members "{{ cluster_members | join(',') }}"{% endif %}
+          {% if enforce_member_of %}--enforce-member-of{% endif %}
+          --use-virtual-mac
+          --vpn-auto-select 
+          --vpn-exclude-external-ips
