@@ -2,10 +2,18 @@
 set env variable for the installation session
 eg:
 ```bash
-   export AWX_ADMIN_PASS='myawxPassword'<br>
-   export MYSQL_ROOT_PASSWORD='myMysqlRootPW'<br>
-   export MYSQL_PASS='myMysqlAppPW'<br>
-   curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/install.sh | bash -s -- --all
+SourceURL=curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main
+$SourceURL/install_awx.sh -o install_awx.sh
+$SourceURL/install_gitlab.sh -o install_gitlab.sh
+$SourceURL/install_mysql.sh -o install_mysql.sh
+$SourceURL/install_nginx.sh -o install_nginx.sh
+$SourceURL/install_phpmyadmin.sh -o install_phpmyadmin.sh
+$SourceURL/show_status.sh -o show_status.sh
+$SourceURL/lib.sh -o lib.sh
+$SourceURL/_installer_script.sh -o _installer_script.sh
+
+sudo chmod +x *.sh
+sudo ./_installer_script.sh --all
 ```
 
 # how to access GitLab::<br>
