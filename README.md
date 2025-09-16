@@ -200,5 +200,11 @@ docker run --rm "$EE_IMAGE" ansible --version
 docker run --rm "$EE_IMAGE" ansible-galaxy collection list | grep -E 'check_point|netcommon'
 ```
 
+# Use it in AWX without a registry (same Docker host)
+AWX → Administration → Execution Environments → Add<br>
+Name: CP EE (Mgmt+Gaia)<br>
+Image: awx-ee:cp-gaia-mgmt ← must match your local tag<br>
+Pull policy: Missing (or Never)<br>
+Registry credential: (leave empty)<br>
 
 
