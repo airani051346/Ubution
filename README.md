@@ -17,8 +17,8 @@ eg:
   URL:  https://< server-ip >:4444
   MySQL root login is enabled remotely (root / zubur1RootPW)
 # Import Database and Sampple Data
-  import netvars.sql file in SQL-DB folder 
-  additional priviligaes for the ansible user
+  import netvars.sql file in SQL-DB folder <br>
+  additional priviligaes for the ansible user<br>
 
 ```sql
 CREATE USER IF NOT EXISTS 'ansible'@'%' IDENTIFIED BY 'ChangeMe';
