@@ -85,7 +85,7 @@ trap 'warn "Something failed. Fix it and re-run — script is mostly idempotent.
 system_prep() {
   say "Updating apt and installing base tools…"
   sudo apt-get update -y
-  sudo apt-get install -y ca-certificates curl gnupg lsb-release apt-transport-https jq git openssl
+  sudo apt-get install -y ca-certificates curl gnupg lsb-release apt-transport-https jq git openssl podman
 
   # Docker Engine + compose plugin
   if ! need_cmd docker; then
