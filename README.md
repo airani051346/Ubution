@@ -86,8 +86,10 @@ Create ssh key for awx and gitlab integration
 sudo ssh-keygen -N '' -f awx_ssh_key
 sudo cat awx_ssh_key.pub
 copy the pub key here in gitlab
+```
 <img width="975" height="355" alt="image" src="https://github.com/user-attachments/assets/27acc4ec-a2a2-4142-9a3b-7398017eb806" />
-	 
+
+```bash 
 cat awx_ssh_key
 ```
 copy the private key on awx
