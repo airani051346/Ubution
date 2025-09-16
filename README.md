@@ -207,4 +207,4 @@ Image: awx-ee:cp-gaia-mgmt ← must match your local tag<br>
 Pull policy: Missing (or Never)<br>
 Registry credential: (leave empty)<br>
 
-
+Assign it on your Organization or Job Template
