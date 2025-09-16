@@ -16,6 +16,17 @@ eg:
 # how to access phpMyAdmin:<br> 
   URL:  https://< server-ip >:4444
   MySQL root login is enabled remotely (root / zubur1RootPW)
+# Import Database and Sampple Data
+	import netvars.sql file in SQL-DB folder 
+
+  	additional priviligaes for the ansible user
+```sql
+CREATE USER IF NOT EXISTS 'ansible'@'%' IDENTIFIED BY 'ChangeMe';
+CREATE USER IF NOT EXISTS 'ansible'@'127.0.0.1' IDENTIFIED BY 'ChangeMe';
+GRANT SELECT ON netvars.* TO 'ansible'@'%';
+GRANT SELECT ON netvars.* TO 'ansible'@'127.0.0.1';
+FLUSH PRIVILEGES;
+```
 
 # Data Viewer:
   URL:  https://< server-ip >:4445
