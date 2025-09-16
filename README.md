@@ -5,7 +5,7 @@ eg:
    export AWX_ADMIN_PASS='myawxPassword'<br>
    export MYSQL_ROOT_PASSWORD='myMysqlRootPW'<br>
    export MYSQL_PASS='myMysqlAppPW'<br>
-   curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/install.sh | bash
+   curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/install.sh | bash -s -- --all
 ```
 
 # how to access GitLab::<br>
