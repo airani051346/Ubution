@@ -208,3 +208,17 @@ Pull policy: Missing (or Never)<br>
 Registry credential: (leave empty)<br>
 
 Assign it on your Organization or Job Template
+
+
+# Verify in awx
+Run a test job with a simple playbook:
+```yaml
+- hosts: localhost
+  gather_facts: no
+  tasks:
+    - command: ansible-galaxy collection list
+      register: result
+    - debug: var=result.stdout
+```
+
+You should see check_point.mgmt and check_point.gaia in the output.
