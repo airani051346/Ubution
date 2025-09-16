@@ -53,6 +53,7 @@ Components (run one or many):
   --gitlab         Install GitLab CE + Nginx HTTPS
   --awx            Install AWX (k3s + Operator) + Nginx HTTPS
   --status         Show overview
+  --all            Install everything
 
 Examples:
   $0                                # install everything
@@ -70,7 +71,7 @@ parse_args(){
       --pma-host)    PMA_HOST="${2:?}";     shift 2 ;;
       --awx-host)    AWX_HOST="${2:?}";     shift 2 ;;
       -h|--help)
-        cat <<EOF
+cat <<EOF
 Usage: $0 [options] [components...]
   --domain <homelab domain>   (default: fritz.box)
   --gitlab-host <FQDN>        (default: gitlab.<domain>)
@@ -83,8 +84,21 @@ Tips:
 EOF
         exit 0 ;;
       # anything else is a component flag → collect it
-      --nginx|--mysql|--mysql-stream|--phpmyadmin|--gitlab|--awx|--status)
-        TARGETS+=("$1"); shift ;;
+      --nginx|--mysql|--mysql-stream|--phpmyadmin|--gitlab|--awx|--status|--all)
+		log "=== Installing Nginx ==="
+		install_nginx
+		log "=== Installing MySQL ==="
+		install_mysql
+		log "=== Enabling MySQL stream ==="
+		enable_mysql_stream
+		log "=== Installing phpMyAdmin ==="
+		install_phpmyadmin
+		log "=== Installing GitLab ==="
+		install_gitlab
+		log "=== Installing AWX ==="
+		install_awx
+		show_status
+		;;
       *)
         die "Unknown option: $1" ;;
     esac
@@ -531,18 +545,21 @@ show_status(){
 # ================== Main (your preferred style) ==================
 main(){
   if [[ $# -eq 0 ]]; then
-    install_nginx
-    install_mysql
-    enable_mysql_stream
-    install_phpmyadmin
-    install_gitlab
-    install_awx
-    show_status
+    print_help
     exit 0
   fi
 
   for arg in "$@"; do
     case $arg in
+      --all)
+        install_nginx
+        install_mysql
+        enable_mysql_stream
+        install_phpmyadmin
+        install_gitlab
+        install_awx
+        show_status
+        ;;
       --nginx)         install_nginx ;;
       --mysql)         install_mysql ;;
       --mysql-stream)  enable_mysql_stream ;;
@@ -554,6 +571,7 @@ main(){
     esac
   done
 }
+
 
 
 # ================== Boot ==================
@@ -570,5 +588,4 @@ else
 fi
 
 # Pass only component flags to main; if none, main runs full stack
-set -- "${TARGETS[@]}"
-main "$@"
+main "${TARGETS[@]}"
