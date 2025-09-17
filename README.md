@@ -4,25 +4,32 @@ eg:
 ```bash
 curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/installer_script.sh | bash -s -- --all --domain <mydomain.com>
 ```
+
 # wait for containers to start
+start a new shell and wait for 
+<img width="917" height="206" alt="image" src="https://github.com/user-attachments/assets/3c2fcc38-88b2-448c-8126-9c6a3b90beff" />
+
 ```bash
 watch -d sudo kubectl -n awx get pods
 ```
 
 # how to access GitLab::<br>
-  URL:  https://gitlab.example.com
+  URL:  https://gitlab.<mydomain.com>
   Initial root password: 
+
 ```bash
 sudo docker exec -t compose-gitlab-1 bash -lc "cat /etc/gitlab/initial_root_password || true"
 ```
 
 # how to access phpMyAdmin:<br> 
-  URL:  https://pma.example.com
-  MySQL root login is enabled remotely (root / default fassword is ChangeMe!Strong123 if not defined with --mysql-root-pass)
+  URL:  https://pma.<mydomain.com>
+  MySQL root login is enabled remotely <br>
+  username root <br>
+  default fassword is ChangeMe!Strong123 if not defined with --mysql-root-pass
   
 # Import Database and Sampple Data
   import netvars.sql file in SQL-DB folder <br>
-  additional priviligaes for the ansible user<br>
+  additional priviligaes for the ansible user <br>
 
 ```sql
 CREATE USER IF NOT EXISTS 'ansible'@'%' IDENTIFIED BY 'ChangeMe';
@@ -32,14 +39,14 @@ GRANT SELECT ON netvars.* TO 'ansible'@'127.0.0.1';
 FLUSH PRIVILEGES;
 ```
 
-# Data Viewer:
-  URL:  https://orch.example.com
-  Visit /init once to create a demo table.
-
+# Data Viewer: (tbd)
+  on RoadMap 2026  URL:  https://orch.example.com
+  
 # how to access AWX:<br>
-  URL:  https://awx.example.com
+  URL:  https://awx.<mydomain.com>
   User: admin
   Pass: (what you set) or fetch with:
+  
 ```bash
 sudo kubectl -n awx get secret awx-admin-password -o jsonpath='{.data.password}' | base64 --decode; echo
 ```
@@ -47,37 +54,40 @@ sudo kubectl -n awx get secret awx-admin-password -o jsonpath='{.data.password}'
 # Download git-rep.
 Go to https://github.com/airani051346/Ubution
 <img width="975" height="451" alt="image" src="https://github.com/user-attachments/assets/2626e3f3-3c2f-4e45-a3a4-9948eb1b600d" />
-
+<br>
 - extract zip to your local storage
   <img width="664" height="435" alt="image" src="https://github.com/user-attachments/assets/ce7c9de2-66f5-4fc4-a575-1d3c31622977" />
-
+<br>
 - Open the folder Ubution-main\git-project
   <img width="763" height="184" alt="image" src="https://github.com/user-attachments/assets/c452f7a9-0ea6-47a5-b885-8938814dfc77" />
-
+<br>
 
 # Login to gitlab
 https://<server-ip>:4443//users/sign_in
 <img width="663" height="522" alt="image" src="https://github.com/user-attachments/assets/e9545ca1-f3bd-4c36-94d3-fb7608f12b9b" />
-
+<br>
  
 - Create a blank project (pub-deploy-cp)
 https://<server-ip>:4443/projects/new#blank_project 
 <img width="732" height="328" alt="image" src="https://github.com/user-attachments/assets/990852a0-445d-4305-bb1a-7a387ac1e3f2" />
+<br>
 <img width="494" height="208" alt="image" src="https://github.com/user-attachments/assets/0a8557a7-2eba-41bb-9b08-12c3e7f81b17" />
+<br>
 <img width="975" height="802" alt="image" src="https://github.com/user-attachments/assets/259d9a0a-6e57-4e2b-b1ef-e249ebd1bd9c" />
-
+<br>
  
 # Upload the git files
 The easiest way to do this is over the web-editor ide
 <img width="672" height="619" alt="image" src="https://github.com/user-attachments/assets/6e1f9202-833e-4714-b5f7-8e6a34fa1fbe" />
-
+<br>
 Now you can drag the folders into your new project
 <img width="820" height="359" alt="image" src="https://github.com/user-attachments/assets/9fd4e042-a5e3-4637-904b-01396eea8727" />
- 
+ <br>
 Commit change is necessary to close anychange in your repository
 <img width="433" height="297" alt="image" src="https://github.com/user-attachments/assets/398ccd75-d974-422a-868d-ad55d96343d6" />
+<br>
 <img width="419" height="288" alt="image" src="https://github.com/user-attachments/assets/2335b2a4-765c-4963-946c-4dbb624f623d" />
-
+<br>
 
 Create ssh key for awx and gitlab integration
 ```bash
@@ -86,27 +96,27 @@ sudo cat awx_ssh_key.pub
 copy the pub key here in gitlab
 ```
 <img width="975" height="355" alt="image" src="https://github.com/user-attachments/assets/27acc4ec-a2a2-4142-9a3b-7398017eb806" />
-
+<br>
 ```bash 
 cat awx_ssh_key
 ```
 copy the private key on awx
 <img width="975" height="414" alt="image" src="https://github.com/user-attachments/assets/8722cc8b-09b1-4b7f-a067-cdf6678dd9fa" />
-
+<br>
 # Create a project
  <img width="975" height="491" alt="image" src="https://github.com/user-attachments/assets/fe1caf39-7137-45c7-9335-0e35d9c7d72a" />
+<br>
 
 - Source controlURL is from your git-repository
 <img width="975" height="416" alt="image" src="https://github.com/user-attachments/assets/bd49a921-b0c8-4aed-ba5e-a248c7354d41" />
-
+<br>
 # connection issues?
 following short script adds your main IP address into the coredns records and restarts the kube:
 ```bash
 SERVER_IP=$(hostname -I | awk '{print $1}')
+Domain=<Domain.com>
 kubectl -n kube-system get cm coredns -o json \
-  | jq --arg add "$SERVER_IP gitlab.fritz.box awx.fritz.box pma.fritz.box\n" \
-    '.data.NodeHosts = (.data.NodeHosts + $add)' \
-  | kubectl apply -f -
+  | jq --arg add "$SERVER_IP gitlab.$Domain awx.$Domain pma.$Domain\n" '.data.NodeHosts = (.data.NodeHosts + $add)' | kubectl apply -f -
 
 kubectl -n kube-system rollout restart deploy/coredns
 kubectl -n kube-system rollout status deploy/coredns --timeout=90s
@@ -131,6 +141,7 @@ vi execution-environment.yml
 ```
 
 put following content in the execution-environment.yml file
+
 ```text
 ---
 version: 3
