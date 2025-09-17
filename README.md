@@ -205,13 +205,14 @@ do not move this apt-get install and pip install to earlier stage! <br>
 ```bash
 sudo apt-get install python3-pip -y
 sudo pip install ansible-builder
-EE_IMAGE="awx-ee:cp-gaia-mgmt"
-sudo ansible-builder build -t $EE_IMAGE -f execution-environment.yml
 
-sudo docker tag $EE_IMAGE docker.io/library/awx-ee:cp-gaia-mgmt
-sudo docker save docker.io/library/$EE_IMAGE -o /tmp/ee.tar
+sudo ansible-builder build -t awx-ee:cp-gaia-mgmt -f execution-environment.yml
+sudo docker save awx-ee:cp-gaia-mgmt -o /tmp/ee.tar
+sudo k3s ctr images import /tmp/ee.tar
 
-sudo k3s ctr --namespace k8s.io images import /tmp/ee.tar
+
+sanity check:
+sudo k3s ctr images ls | grep awx-ee
 ```
 
 # Use it in AWX without a registry (same Docker host)
