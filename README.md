@@ -205,11 +205,11 @@ now run following command to create your run-time environment
 sudo apt-get install python3-pip -y
 sudo pip install ansible-builder
 EE_IMAGE="awx-ee:cp-gaia-mgmt"
-sudo ansible-builder build -t "$EE_IMAGE" -f execution-environment.yml
-sudo docker save "$EE_IMAGE" | sudo k3s ctr images import -
-docker tag "$EE_IMAGE" your_dockerhub_username/custom-awx-ee:v1
-docker push your_dockerhub_username/"$EE_IMAGE"
+sudo ansible-builder build -t $EE_IMAGE -f execution-environment.yml
 
+sudo docker save docker.io/library/$EE_IMAGE -o /tmp/ee.tar
+sudo k3s ctr images import /tmp/ee.tar
+sudo docker tag $EE_IMAGE docker.io/library/$EE_IMAGE
 
 sanity check:
 sudo docker run --rm "$EE_IMAGE" ansible --version
