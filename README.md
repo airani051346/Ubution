@@ -99,6 +99,18 @@ copy the private key on awx
 - Source controlURL is from your git-repository
 <img width="975" height="416" alt="image" src="https://github.com/user-attachments/assets/bd49a921-b0c8-4aed-ba5e-a248c7354d41" />
 
+# connection issues?
+following short script adds your main IP address into the coredns records and restarts the kube:
+```bash
+SERVER_IP=$(hostname -I | awk '{print $1}')
+kubectl -n kube-system get cm coredns -o json \
+  | jq --arg add "$SERVER_IP gitlab.fritz.box awx.fritz.box pma.fritz.box\n" \
+    '.data.NodeHosts = (.data.NodeHosts + $add)' \
+  | kubectl apply -f -
+
+kubectl -n kube-system rollout restart deploy/coredns
+kubectl -n kube-system rollout status deploy/coredns --timeout=90s
+```
 
 Wait for the project to synchronize: AWX will automatically synchronize the project with the Git repository. You can monitor the progress in the “Projects” tab.
 # Creating a new inventory:
