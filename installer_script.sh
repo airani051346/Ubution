@@ -698,7 +698,7 @@ if $DO_K3S; then
   kube_ready
   cleanup_k3s_port_claimers
   if $DO_DNS_PATCH; then patch_coredns_hosts; fi
-  **install_coredns_ensure_unit**
+  install_coredns_ensure_unit
 fi
 
 if $DO_AWX; then
@@ -710,7 +710,7 @@ fi
 if $DO_PATCH_DNS; then
   kube_ready
   patch_coredns_hosts
-  **install_coredns_ensure_unit**
+  install_coredns_ensure_unit
 fi
 
 if $DO_NGINX; then
