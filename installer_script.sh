@@ -154,6 +154,26 @@ wait_for_k8s(){
   return 1
 }
 
+install_coredns_custom_manifest() {
+  local manifest="/var/lib/rancher/k3s/server/manifests/coredns-custom-nodehosts.yaml"
+  mkdir -p "$(dirname "$manifest")"
+
+  cat > "$manifest" <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  NodeHosts: |
+    ${SERVER_IP} ${GITLAB_HOST} ${AWX_HOST} ${PMA_HOST}
+EOF
+
+  log "Created persistent CoreDNS custom ConfigMap at $manifest"
+  log "k3s will reconcile this automatically (no timer needed)."
+}
+
+
 ensure_nodehosts(){
   local ip; ip="$(get_primary_ip)"
   local a="${GITLAB_HOST:-gitlab.example.lan}"
@@ -730,7 +750,6 @@ if $DO_K3S; then
   kube_ready
   cleanup_k3s_port_claimers
   if $DO_DNS_PATCH; then patch_coredns_hosts; fi
-  install_coredns_ensure_unit
 fi
 
 if $DO_AWX; then
@@ -742,7 +761,6 @@ fi
 if $DO_PATCH_DNS; then
   kube_ready
   patch_coredns_hosts
-  install_coredns_ensure_unit
 fi
 
 if $DO_NGINX; then
