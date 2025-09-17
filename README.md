@@ -9,11 +9,13 @@ curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main
 # how to access GitLab::<br>
   URL:  https://gitlab.example.com
   Initial root password: 
-    sudo cat /etc/gitlab/initial_root_password
+```bash
+sudo docker exec -t compose-gitlab-1 bash -lc "cat /etc/gitlab/initial_root_password || true"
+```
 
 # how to access phpMyAdmin:<br> 
   URL:  https://pma.example.com
-  MySQL root login is enabled remotely (root / rootpass123!)
+  MySQL root login is enabled remotely (root / <is set in the installer_scipt.sh>)
   
 # Import Database and Sampple Data
   import netvars.sql file in SQL-DB folder <br>
@@ -35,15 +37,9 @@ FLUSH PRIVILEGES;
   URL:  https://awx.example.com
   User: admin
   Pass: (what you set) or fetch with:
-        sudo kubectl -n awx get secret awx-admin-password -o jsonpath='{.data.password}' | base64 --decode; echo
-
-Files live under:
-  /opt/stack/compose
-  /opt/stack/k8s
-
-Note: Browser will warn about the self-signed certificate (expected).
-If you were just added to the 'docker' group, open a new terminal or run 'newgrp docker' to use Docker without sudo.
-
+```bash
+sudo kubectl -n awx get secret awx-admin-password -o jsonpath='{.data.password}' | base64 --decode; echo
+```
 
 # Download git-rep.
 Go to https://github.com/airani051346/Ubution
