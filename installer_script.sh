@@ -340,13 +340,14 @@ write_compose() {
 services:
   mysql:
     image: mysql:8.4
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD}"
       MYSQL_DATABASE: "${APP_DB_NAME}"
       MYSQL_USER: "${APP_DB_USER}"
       MYSQL_PASSWORD: "${APP_DB_PASS}"
     ports:
-      - "0.0.0.0:${MYSQL_PORT}:3306"   # reachable from k8s pods
+      - "0.0.0.0:${MYSQL_PORT}:3306"
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
       interval: 5s
@@ -359,16 +360,18 @@ services:
 
   phpmyadmin:
     image: phpmyadmin:latest
+    restart: unless-stopped
     environment:
       PMA_HOST: mysql
       PMA_ABSOLUTE_URI: https://${PMA_HOST}/
     depends_on: [mysql]
     ports:
-      - "127.0.0.1:${PMA_BIND_PORT}:80"  # loopback; proxied by Nginx
+      - "127.0.0.1:${PMA_BIND_PORT}:80"
     networks: [back]
 
   gitlab:
     image: gitlab/gitlab-ee:latest
+    restart: unless-stopped
     hostname: gitlab
     shm_size: "512m"
     environment:
@@ -396,6 +399,7 @@ volumes:
   gitlab_data:
 YAML
 }
+
 
 compose_up() {
   (cd "$COMPOSE_DIR" && docker compose up -d)
@@ -511,6 +515,33 @@ disable:
   - servicelb
 EOF
 }
+
+install_compose_autostart() {
+  cat > /etc/systemd/system/stackctl-compose.service <<'EOF'
+[Unit]
+Description=StackCTL Docker Compose app stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stack/compose
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+RemainAfterExit=yes
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable stackctl-compose.service
+  # Start it now as well (idempotent if containers already running)
+  systemctl start stackctl-compose.service || true
+}
+
 
 install_k3s() {
   ensure_k3s_config
@@ -687,6 +718,7 @@ fi
 if $DO_MYSQL || $DO_PMA || $DO_GITLAB; then
   write_compose
   compose_up
+  install_compose_autostart
 fi
 
 if $DO_MYSQL; then
