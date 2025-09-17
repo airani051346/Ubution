@@ -601,7 +601,7 @@ if needle not in core:
     else:
         core = core + "\n" + ins
     d["data"]["Corefile"]=core
-    subprocess.check_call(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode())
+    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode(), check=True)
 
 # Update NodeHosts content idempotently
 d=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
@@ -617,11 +617,10 @@ new="\n".join(lines)+"\n"
 changed = d["data"].get("NodeHosts","") != new
 if changed:
     d["data"]["NodeHosts"]=new
-    subprocess.check_call(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode())
-    subprocess.check_call(["kubectl","-n",ns,"rollout","restart","deploy/coredns"])
+    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode(), check=True)
+    subprocess.run(["kubectl","-n",ns,"rollout","restart","deploy/coredns"], check=True)
 PY
 }
-
 
 awx_admin_password() {
   export KUBECONFIG="$K3S_KUBECONFIG"
@@ -673,6 +672,7 @@ status() {
 need_root
 parse_args "$@"
 check_os
+write_stack_env
 
 if $DO_MYSQL || $DO_PMA || $DO_GITLAB || $DO_NGINX || $DO_CERTS || $DO_K3S || $DO_AWX || $DO_ALL; then
   apt_install
