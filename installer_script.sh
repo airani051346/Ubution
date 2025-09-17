@@ -576,7 +576,7 @@ patch_coredns_hosts() {
   for i in {1..120}; do
     kubectl -n kube-system get cm coredns >/dev/null 2>&1 && break || sleep 2
   done
-  if ! kubectl -n kube-system get cm coredns >/div/null 2>&1; then
+  if ! kubectl -n kube-system get cm coredns >/dev/null 2>&1; then
     err "CoreDNS configmap not found; try again shortly with --dns-patch."
     return 1
   fi
