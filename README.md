@@ -222,6 +222,9 @@ Image: awx-ee:cp-gaia-mgmt     ← must match your local tag<br>
 Pull policy: Missing (or Never)<br>
 Registry credential: (leave empty)<br>
 
+<img width="1641" height="776" alt="image" src="https://github.com/user-attachments/assets/e8b9222b-57d3-4050-a117-199428d729f0" />
+
+
 Assign it on your Organization or Job Template
 
 
