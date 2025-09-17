@@ -208,9 +208,10 @@ sudo pip install ansible-builder
 EE_IMAGE="awx-ee:cp-gaia-mgmt"
 sudo ansible-builder build -t $EE_IMAGE -f execution-environment.yml
 
+sudo docker tag $EE_IMAGE docker.io/library/awx-ee:cp-gaia-mgmt
 sudo docker save docker.io/library/$EE_IMAGE -o /tmp/ee.tar
-sudo k3s ctr images import /tmp/ee.tar
-sudo docker tag $EE_IMAGE docker.io/library/$EE_IMAGE
+
+sudo k3s ctr --namespace k8s.io images import /tmp/ee.tar
 ```
 
 # Use it in AWX without a registry (same Docker host)
