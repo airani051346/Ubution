@@ -192,11 +192,12 @@ additional_build_steps:
 now run following command to create your run-time environment
 ```bash
 EE_IMAGE="awx-ee:cp-gaia-mgmt"
-ansible-builder build -t "$EE_IMAGE" --container-runtime=docker  --build-arg PIP_DEFAULT_TIMEOUT=600
+sudo apt-get install -y ansible
+sudo ansible-builder build -t "$EE_IMAGE" --container-runtime=docker  --build-arg PIP_DEFAULT_TIMEOUT=600
 
 sanity check:
-docker run --rm "$EE_IMAGE" ansible --version
-docker run --rm "$EE_IMAGE" ansible-galaxy collection list | grep -E 'check_point|netcommon'
+sudo docker run --rm "$EE_IMAGE" ansible --version
+sudo docker run --rm "$EE_IMAGE" ansible-galaxy collection list | grep -E 'check_point|netcommon'
 ```
 
 # Use it in AWX without a registry (same Docker host)
