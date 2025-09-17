@@ -200,7 +200,8 @@ additional_build_steps:
 
 ```
 
-now run following command to create your run-time environment
+now run following command to create your run-time environment <br>
+do not move this apt-get install and pip install to earlier stage! <br>
 ```bash
 sudo apt-get install python3-pip -y
 sudo pip install ansible-builder
@@ -210,11 +211,6 @@ sudo ansible-builder build -t $EE_IMAGE -f execution-environment.yml
 sudo docker save docker.io/library/$EE_IMAGE -o /tmp/ee.tar
 sudo k3s ctr images import /tmp/ee.tar
 sudo docker tag $EE_IMAGE docker.io/library/$EE_IMAGE
-
-sanity check:
-sudo docker run --rm "$EE_IMAGE" ansible --version
-sudo docker run --rm "$EE_IMAGE" ansible-galaxy collection list | grep -E 'check_point|netcommon'
-
 ```
 
 # Use it in AWX without a registry (same Docker host)
