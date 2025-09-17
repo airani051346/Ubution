@@ -4,6 +4,10 @@ eg:
 ```bash
 curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/installer_script.sh | bash -s -- --all --domain <mydomain.com>
 ```
+# wait for containers to start
+```bash
+watch -d sudo kubectl -n awx get pods
+```
 
 # how to access GitLab::<br>
   URL:  https://gitlab.example.com
