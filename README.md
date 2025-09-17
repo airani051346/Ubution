@@ -193,6 +193,7 @@ now run following command to create your run-time environment
 ```bash
 sudo apt-get install ansible -y
 sudo apt-get install python3-pip -y
+sudo pip install ansible-builder
 EE_IMAGE="awx-ee:cp-gaia-mgmt"
 sudo ansible-builder build -t "$EE_IMAGE" --container-runtime=docker  --build-arg PIP_DEFAULT_TIMEOUT=600
 
