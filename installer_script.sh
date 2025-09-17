@@ -110,6 +110,139 @@ Examples:
 USAGE
 }
 
+
+# Prefer the IP of the default route; fall back to hostname -I
+get_primary_ip() {
+  local ip
+  ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src"){print $(i+1); exit}}') || true
+  [[ -z "${ip:-}" ]] && ip=$(hostname -I | awk '{print $1}')
+  echo "$ip"
+}
+
+# Persist important hostnames so the systemd unit can read them later
+write_stack_env() {
+  cat > /etc/stackctl.env <<EOF
+DOMAIN="${DOMAIN}"
+GITLAB_HOST="${GITLAB_HOST}"
+AWX_HOST="${AWX_HOST}"
+PMA_HOST="${PMA_HOST}"
+K3S_KUBECONFIG="${K3S_KUBECONFIG}"
+EOF
+}
+
+# Install a systemd unit + timer that keeps CoreDNS NodeHosts in sync
+install_coredns_ensure_unit() {
+  cat > /usr/local/sbin/stackctl-coredns-ensure.sh <<'EOS'
+#!/usr/bin/env bash
+set -euo pipefail
+export KUBECONFIG="${K3S_KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
+[[ -f /etc/stackctl.env ]] && . /etc/stackctl.env
+
+get_primary_ip() {
+  local ip
+  ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src"){print $(i+1); exit}}') || true
+  [[ -z "${ip:-}" ]] && ip=$(hostname -I | awk '{print $1}')
+  echo "$ip"
+}
+
+wait_for_k8s(){
+  for i in {1..90}; do
+    kubectl get nodes >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  echo "[stackctl] kubectl not ready" >&2
+  return 1
+}
+
+ensure_nodehosts(){
+  local ip; ip="$(get_primary_ip)"
+  local a="${GITLAB_HOST:-gitlab.example.lan}"
+  local b="${AWX_HOST:-awx.example.lan}"
+  local c="${PMA_HOST:-pma.example.lan}"
+
+  # Skip if user left example.lan defaults
+  if [[ "$a" == "gitlab.example.lan" || "$b" == "awx.example.lan" || "$c" == "pma.example.lan" ]]; then
+    echo "[stackctl] Skipping ensure: example.lan still set"
+    return 0
+  fi
+
+  python3 - "$ip" "$a" "$b" "$c" <<'PY'
+import sys, json, subprocess
+ip,a,b,c = sys.argv[1:]
+ns="kube-system"; name="coredns"
+
+# If CoreDNS CM isn't there yet, exit quietly
+try:
+    d=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
+except subprocess.CalledProcessError:
+    sys.exit(0)
+
+# 1) Ensure Corefile uses NodeHosts file
+core=d["data"].get("Corefile","")
+needle="hosts /etc/coredns/NodeHosts {"
+if needle not in core:
+    ins = "    hosts /etc/coredns/NodeHosts {\n        ttl 60\n        reload 15s\n        fallthrough\n    }\n"
+    fwd = "forward . /etc/resolv.conf"
+    if fwd in core:
+        core = core.replace(fwd, ins + "    " + fwd)
+    else:
+        core = core + "\n" + ins
+    d["data"]["Corefile"]=core
+    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode(), check=False)
+
+# 2) Idempotently update NodeHosts content
+d=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
+nodehosts=d["data"].get("NodeHosts","")
+targets={a,b,c}
+def line_has_targets(ln):
+    toks=ln.split()
+    return any(h in toks[1:] for h in targets)
+lines=[ln for ln in nodehosts.splitlines() if ln.strip() and not line_has_targets(ln)]
+lines.append(f"{ip} {a} {b} {c}")
+new="\n".join(lines)+"\n"
+
+if d["data"].get("NodeHosts","") != new:
+    d["data"]["NodeHosts"]=new
+    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode(), check=False)
+    subprocess.run(["kubectl","-n",ns,"rollout","restart","deploy/coredns"], check=False)
+PY
+}
+
+wait_for_k8s && ensure_nodehosts
+EOS
+  chmod +x /usr/local/sbin/stackctl-coredns-ensure.sh
+
+  cat > /etc/systemd/system/stackctl-coredns-ensure.service <<'EOF'
+[Unit]
+Description=Ensure CoreDNS NodeHosts has current host IP for GitLab/AWX/pma
+Wants=network-online.target
+After=network-online.target k3s.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/stackctl.env
+Environment=K3S_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+ExecStart=/usr/local/sbin/stackctl-coredns-ensure.sh
+EOF
+
+  cat > /etc/systemd/system/stackctl-coredns-ensure.timer <<'EOF'
+[Unit]
+Description=Periodic CoreDNS NodeHosts ensure
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=stackctl-coredns-ensure.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now stackctl-coredns-ensure.timer
+  systemctl start stackctl-coredns-ensure.service || true
+}
+
 parse_args() {
   # Track explicit host overrides so we can recompute when only --domain is given
   local DID_SET_GITLAB_HOST=false
@@ -439,70 +572,56 @@ patch_coredns_hosts() {
     return 0
   fi
 
-  log "Waiting for CoreDNS deployment and configmap to be ready"
-  # Wait for coredns deployment to exist
-  for i in {1..60}; do
-    if kubectl -n kube-system get deploy coredns >/dev/null 2>&1; then break; fi
-    sleep 2
+  log "Waiting for CoreDNS ConfigMap..."
+  for i in {1..120}; do
+    kubectl -n kube-system get cm coredns >/dev/null 2>&1 && break || sleep 2
   done
-  # Wait for configmap to exist
-  for i in {1..60}; do
-    if kubectl -n kube-system get cm coredns >/dev/null 2>&1; then break; fi
-    sleep 2
-  done
-  if ! kubectl -n kube-system get cm coredns >/dev/null 2>&1; then
+  if ! kubectl -n kube-system get cm coredns >/div/null 2>&1; then
     err "CoreDNS configmap not found; try again shortly with --dns-patch."
     return 1
   fi
 
-  log "Patching CoreDNS to resolve ${A_HOST}, ${B_HOST}, ${C_HOST} -> ${SERVER_IP} for pods"
-  TMP_YAML=$(mktemp)
-  kubectl -n kube-system get cm coredns -o yaml > "$TMP_YAML"
+  local CUR_IP; CUR_IP="$(get_primary_ip)"
+  log "Syncing CoreDNS NodeHosts -> ${CUR_IP} ${A_HOST} ${B_HOST} ${C_HOST}"
 
-  # Write a small, static Python helper to avoid heredoc quoting issues
-  PY_HELPER=/tmp/stackctl_patch_coredns.py
-  cat > "$PY_HELPER" <<'PY'
-import sys, yaml
-# args: <cm_yaml_path> <ip> <a_host> <b_host> <c_host>
-if len(sys.argv) != 6:
-    print("usage: script <yaml> <ip> <a> <b> <c>", file=sys.stderr)
-    sys.exit(2)
-cm_path, ip, a, b, c = sys.argv[1:]
-with open(cm_path, 'r') as f:
-    d = yaml.safe_load(f)
-core = d['data'].get('Corefile', '')
-needle = 'forward . /etc/resolv.conf'
-block = (
-    "    # stackctl hosts
-"
-    "    hosts {
-"
-    f"        {ip} {a} {b} {c}
-"
-    "        fallthrough
-"
-    "    }
-"
-)
-if '# stackctl hosts' in core:
-    # already patched; nothing to do
-    pass
-elif needle in core:
-    core = core.replace(needle, block + "
-    " + needle)
-    d['data']['Corefile'] = core
-    with open(cm_path, 'w') as f:
-        yaml.safe_dump(d, f)
-else:
-    print("CoreDNS Corefile missing expected 'forward' plugin; not patching", file=sys.stderr)
-    sys.exit(2)
+  python3 - "$CUR_IP" "$A_HOST" "$B_HOST" "$C_HOST" <<'PY'
+import sys, json, subprocess
+ip,a,b,c = sys.argv[1:]
+ns="kube-system"; name="coredns"
+
+# Ensure Corefile points at NodeHosts file (k3s default, but make sure)
+d=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
+core=d["data"].get("Corefile","")
+needle="hosts /etc/coredns/NodeHosts {"
+if needle not in core:
+    ins = "    hosts /etc/coredns/NodeHosts {\n        ttl 60\n        reload 15s\n        fallthrough\n    }\n"
+    fwd = "forward . /etc/resolv.conf"
+    if fwd in core:
+        core = core.replace(fwd, ins + "    " + fwd)
+    else:
+        core = core + "\n" + ins
+    d["data"]["Corefile"]=core
+    subprocess.check_call(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode())
+
+# Update NodeHosts content idempotently
+d=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
+nodehosts=d["data"].get("NodeHosts","")
+targets={a,b,c}
+def line_has_targets(ln):
+    toks=ln.split()
+    return any(h in toks[1:] for h in targets)
+lines=[ln for ln in nodehosts.splitlines() if ln.strip() and not line_has_targets(ln)]
+lines.append(f"{ip} {a} {b} {c}")
+new="\n".join(lines)+"\n"
+
+changed = d["data"].get("NodeHosts","") != new
+if changed:
+    d["data"]["NodeHosts"]=new
+    subprocess.check_call(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode())
+    subprocess.check_call(["kubectl","-n",ns,"rollout","restart","deploy/coredns"])
 PY
-
-  python3 "$PY_HELPER" "$TMP_YAML" "$SERVER_IP" "$A_HOST" "$B_HOST" "$C_HOST" || true
-  kubectl -n kube-system apply -f "$TMP_YAML" || true
-  kubectl -n kube-system rollout restart deploy/coredns || true
-  rm -f "$TMP_YAML"
 }
+
 
 awx_admin_password() {
   export KUBECONFIG="$K3S_KUBECONFIG"
@@ -579,6 +698,7 @@ if $DO_K3S; then
   kube_ready
   cleanup_k3s_port_claimers
   if $DO_DNS_PATCH; then patch_coredns_hosts; fi
+  **install_coredns_ensure_unit**
 fi
 
 if $DO_AWX; then
@@ -590,6 +710,7 @@ fi
 if $DO_PATCH_DNS; then
   kube_ready
   patch_coredns_hosts
+  **install_coredns_ensure_unit**
 fi
 
 if $DO_NGINX; then
