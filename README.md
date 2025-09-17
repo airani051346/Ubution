@@ -3,7 +3,6 @@ set env variable for the installation session
 eg:
 ```bash
 curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/installer_script.sh | bash -s -- --all --domain <mydomain.com>
-
 ```
 
 # how to access GitLab::<br>
@@ -15,7 +14,7 @@ sudo docker exec -t compose-gitlab-1 bash -lc "cat /etc/gitlab/initial_root_pass
 
 # how to access phpMyAdmin:<br> 
   URL:  https://pma.example.com
-  MySQL root login is enabled remotely (root / <is set in the installer_scipt.sh>)
+  MySQL root login is enabled remotely (root / default fassword is ChangeMe!Strong123 if not defined with --mysql-root-pass)
   
 # Import Database and Sampple Data
   import netvars.sql file in SQL-DB folder <br>
