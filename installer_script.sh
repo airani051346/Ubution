@@ -119,6 +119,20 @@ get_primary_ip() {
   echo "$ip"
 }
 
+wait_for_awx_crd() {
+  export KUBECONFIG="$K3S_KUBECONFIG"
+  echo "[+] Waiting for AWX CRDs to register..."
+  for i in {1..60}; do
+    if kubectl get crd awxs.awx.ansible.com >/dev/null 2>&1; then
+      echo "[+] AWX CRD found"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "[!] Timed out waiting for AWX CRD" >&2
+  return 1
+}
+
 # Persist important hostnames so the systemd unit can read them later
 write_stack_env() {
   cat > /etc/stackctl.env <<EOF
@@ -143,20 +157,6 @@ get_primary_ip() {
   ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src"){print $(i+1); exit}}') || true
   [[ -z "${ip:-}" ]] && ip=$(hostname -I | awk '{print $1}')
   echo "$ip"
-}
-
-wait_for_awx_crd() {
-  export KUBECONFIG="$K3S_KUBECONFIG"
-  echo "[+] Waiting for AWX CRDs to register..."
-  for i in {1..60}; do
-    if kubectl get crd awxs.awx.ansible.com >/dev/null 2>&1; then
-      echo "[+] AWX CRD found"
-      return 0
-    fi
-    sleep 2
-  done
-  echo "[!] Timed out waiting for AWX CRD" >&2
-  return 1
 }
 
 wait_for_k8s(){
