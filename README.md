@@ -2,7 +2,7 @@
 set env variable for the installation session
 eg:
 ```bash
-curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/installer_script.sh | bash -s -- --all --domain <mydomain.com>
+curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/installer_script.sh | sudo bash -s -- --all --domain <mydomain.com>
 ```
 
 # wait for containers to start
