@@ -250,4 +250,12 @@ Run a test job with a simple playbook:
     - debug: var=result.stdout
 ```
 
+# ip address of mysql docker compose 
+
+```bash
+sudo docker ps
+sudo docker inspect -f '{{.Name}} -> {{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' compose-mysql-1
+```
+<img width="1757" height="236" alt="image" src="https://github.com/user-attachments/assets/f4e7d14d-d283-4565-b03e-56359706c102" />
+
 You should see check_point.mgmt and check_point.gaia in the output.
