@@ -28,7 +28,7 @@ sudo docker exec -t compose-gitlab-1 bash -lc "cat /etc/gitlab/initial_root_pass
   default fassword is ChangeMe!Strong123 if not defined with --mysql-root-pass
   
 # Import Database and Sampple Data
-  import netvars.sql into mysql DB. You can find this file in SQL-DB folder <br>
+  create a database named netvars and import netvars.sql into mysql DB. You can find this file in SQL-DB folder <br>
   additional priviligaes for the ansible user <br>
 
 ```sql
