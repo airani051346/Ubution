@@ -2,28 +2,17 @@
 set -euo pipefail
 
 # ==============================================
-# stackctl.sh
-# Install & wire up on one Ubuntu host:
+# stackctl.sh (cleaned)
+# One-host setup for:
 #   - Docker + docker compose plugin
 #   - MySQL 8 (Docker)
 #   - phpMyAdmin (Docker)
 #   - GitLab Omnibus (Docker)
-#   - Nginx (host) for TLS termination
+#   - Nginx (host) TLS reverse proxy
 #   - k3s (Kubernetes) + AWX Operator + AWX (NodePort)
-# HTTPS for all apps via Nginx. AWX can pull from GitLab and reach MySQL.
-# Ports are chosen to avoid conflicts.
 #
-# Usage examples:
-#   sudo bash stackctl.sh --all --domain example.lan \
-#        --gitlab-host gitlab.example.lan --awx-host awx.example.lan --pma-host pma.example.lan
-#
-#   sudo bash stackctl.sh --mysql --pma
-#   sudo bash stackctl.sh --gitlab
-#   sudo bash stackctl.sh --awx
-#   sudo bash stackctl.sh --nginx --certs
-#   sudo bash stackctl.sh --status
-#
-# NOTE: Defaults are meant for a LAN/Dev setup with mkcert.
+# HTTPS for all apps via Nginx (mkcert for LAN/dev).
+# CoreDNS patch allows pods to resolve hostnames (gitlab/awx/pma) to this node IP.
 # ==============================================
 
 # ----------------- Defaults -----------------
@@ -54,7 +43,7 @@ K3S_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 AWX_NAMESPACE=awx
 AWX_NAME=awx
 AWX_NODEPORT=30090
-AWX_OPERATOR_VERSION="2.19.0"  # change if needed; tag in awx-operator repo
+AWX_OPERATOR_VERSION="2.19.0"  # tag in awx-operator repo
 
 # GitLab container ports
 GITLAB_HTTP_PORT=8929
@@ -64,11 +53,11 @@ GITLAB_SSH_PORT=2222
 PMA_BIND_PORT=9001
 
 # MySQL
-MYSQL_PORT=3306                 # host port (exposed on 0.0.0.0)
-MYSQL_ROOT_PASSWORD="ChangeMe!Strong123"  # override with env or pass via --mysql-root-pass
+MYSQL_PORT=3306
+MYSQL_ROOT_PASSWORD="ChangeMe!Strong123"
 APP_DB_NAME=appdb
 APP_DB_USER=awx_app
-APP_DB_PASS="AppDbStrong!123"  # AWX/Ansible can use this
+APP_DB_PASS="AppDbStrong!123"
 
 # Internal flags (targets)
 DO_MYSQL=false
@@ -80,8 +69,8 @@ DO_K3S=false
 DO_AWX=false
 DO_STATUS=false
 DO_ALL=false
-DO_DNS_PATCH=true   # patch CoreDNS so pods can resolve our hostnames to SERVER_IP
-DO_PATCH_DNS=false    # run only the CoreDNS patch step (use --dns-patch)
+DO_DNS_PATCH=true   # run CoreDNS patch during --k3s
+DO_PATCH_DNS=false  # run only the CoreDNS patch step (with --dns-patch)
 
 # ----------------- Helpers -----------------
 log() { echo -e "[+] $*"; }
@@ -99,17 +88,16 @@ Usage: $0 [--all] [--mysql] [--pma] [--gitlab] [--nginx] [--certs] [--k3s] [--aw
            [--domain DOMAIN] [--gitlab-host HOST] [--awx-host HOST] [--pma-host HOST]
            [--server-ip IP] [--mysql-port PORT] [--mysql-root-pass PASS]
            [--app-db-name NAME] [--app-db-user USER] [--app-db-pass PASS]
-           [--gitlab-ssh-port PORT] [--awx-nodeport PORT] [--no-dns-patch]
+           [--gitlab-ssh-port PORT] [--awx-nodeport PORT] [--dns-patch] [--no-dns-patch]
 
 Examples:
   sudo bash $0 --all --domain example.lan --gitlab-host gitlab.example.lan --awx-host awx.example.lan --pma-host pma.example.lan
   sudo bash $0 --mysql --pma
   sudo bash $0 --gitlab
-  sudo bash $0 --awx
+  sudo bash $0 --k3s --awx
   sudo bash $0 --status
 USAGE
 }
-
 
 # Prefer the IP of the default route; fall back to hostname -I
 get_primary_ip() {
@@ -119,166 +107,7 @@ get_primary_ip() {
   echo "$ip"
 }
 
-wait_for_awx_crd() {
-  export KUBECONFIG="$K3S_KUBECONFIG"
-  echo "[+] Waiting for AWX CRDs to register..."
-  for i in {1..60}; do
-    if kubectl get crd awxs.awx.ansible.com >/dev/null 2>&1; then
-      echo "[+] AWX CRD found"
-      return 0
-    fi
-    sleep 2
-  done
-  echo "[!] Timed out waiting for AWX CRD" >&2
-  return 1
-}
-
-# Persist important hostnames so the systemd unit can read them later
-write_stack_env() {
-  cat > /etc/stackctl.env <<EOF
-DOMAIN="${DOMAIN}"
-GITLAB_HOST="${GITLAB_HOST}"
-AWX_HOST="${AWX_HOST}"
-PMA_HOST="${PMA_HOST}"
-K3S_KUBECONFIG="${K3S_KUBECONFIG}"
-EOF
-}
-
-# Install a systemd unit + timer that keeps CoreDNS NodeHosts in sync
-install_coredns_ensure_unit() {
-  cat > /usr/local/sbin/stackctl-coredns-ensure.sh <<'EOS'
-#!/usr/bin/env bash
-set -euo pipefail
-export KUBECONFIG="${K3S_KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
-[[ -f /etc/stackctl.env ]] && . /etc/stackctl.env
-
-get_primary_ip() {
-  local ip
-  ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src"){print $(i+1); exit}}') || true
-  [[ -z "${ip:-}" ]] && ip=$(hostname -I | awk '{print $1}')
-  echo "$ip"
-}
-
-wait_for_k8s(){
-  for i in {1..90}; do
-    kubectl get nodes >/dev/null 2>&1 && return 0
-    sleep 2
-  done
-  echo "[stackctl] kubectl not ready" >&2
-  return 1
-}
-
-install_coredns_custom_manifest() {
-  local manifest="/var/lib/rancher/k3s/server/manifests/coredns-custom-nodehosts.yaml"
-  mkdir -p "$(dirname "$manifest")"
-
-  cat > "$manifest" <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: coredns-custom
-  namespace: kube-system
-data:
-  NodeHosts: |
-    ${SERVER_IP} ${GITLAB_HOST} ${AWX_HOST} ${PMA_HOST}
-EOF
-
-  log "Created persistent CoreDNS custom ConfigMap at $manifest"
-  log "k3s will reconcile this automatically (no timer needed)."
-}
-
-
-ensure_nodehosts(){
-  local ip; ip="$(get_primary_ip)"
-  local a="${GITLAB_HOST:-gitlab.example.lan}"
-  local b="${AWX_HOST:-awx.example.lan}"
-  local c="${PMA_HOST:-pma.example.lan}"
-
-  # Skip if user left example.lan defaults
-  if [[ "$a" == "gitlab.example.lan" || "$b" == "awx.example.lan" || "$c" == "pma.example.lan" ]]; then
-    echo "[stackctl] Skipping ensure: example.lan still set"
-    return 0
-  fi
-
-  python3 - "$ip" "$a" "$b" "$c" <<'PY'
-import sys, json, subprocess
-ip,a,b,c = sys.argv[1:]
-ns="kube-system"; name="coredns"
-
-# If CoreDNS CM isn't there yet, exit quietly
-try:
-    d=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
-except subprocess.CalledProcessError:
-    sys.exit(0)
-
-# 1) Ensure Corefile uses NodeHosts file
-core=d["data"].get("Corefile","")
-needle="hosts /etc/coredns/NodeHosts {"
-if needle not in core:
-    ins = "    hosts /etc/coredns/NodeHosts {\n        ttl 60\n        reload 15s\n        fallthrough\n    }\n"
-    fwd = "forward . /etc/resolv.conf"
-    if fwd in core:
-        core = core.replace(fwd, ins + "    " + fwd)
-    else:
-        core = core + "\n" + ins
-    d["data"]["Corefile"]=core
-    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode(), check=False)
-
-# 2) Idempotently update NodeHosts content
-d=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
-nodehosts=d["data"].get("NodeHosts","")
-targets={a,b,c}
-def line_has_targets(ln):
-    toks=ln.split()
-    return any(h in toks[1:] for h in targets)
-lines=[ln for ln in nodehosts.splitlines() if ln.strip() and not line_has_targets(ln)]
-lines.append(f"{ip} {a} {b} {c}")
-new="\n".join(lines)+"\n"
-
-if d["data"].get("NodeHosts","") != new:
-    d["data"]["NodeHosts"]=new
-    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode(), check=False)
-    subprocess.run(["kubectl","-n",ns,"rollout","restart","deploy/coredns"], check=False)
-PY
-}
-
-wait_for_k8s && ensure_nodehosts
-EOS
-  chmod +x /usr/local/sbin/stackctl-coredns-ensure.sh
-
-  cat > /etc/systemd/system/stackctl-coredns-ensure.service <<'EOF'
-[Unit]
-Description=Ensure CoreDNS NodeHosts has current host IP for GitLab/AWX/pma
-Wants=network-online.target
-After=network-online.target k3s.service
-
-[Service]
-Type=oneshot
-EnvironmentFile=-/etc/stackctl.env
-Environment=K3S_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-ExecStart=/usr/local/sbin/stackctl-coredns-ensure.sh
-EOF
-
-  cat > /etc/systemd/system/stackctl-coredns-ensure.timer <<'EOF'
-[Unit]
-Description=Periodic CoreDNS NodeHosts ensure
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
-Unit=stackctl-coredns-ensure.service
-
-[Install]
-WantedBy=timers.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable --now stackctl-coredns-ensure.timer
-  systemctl start stackctl-coredns-ensure.service || true
-}
-
 parse_args() {
-  # Track explicit host overrides so we can recompute when only --domain is given
   local DID_SET_GITLAB_HOST=false
   local DID_SET_AWX_HOST=false
   local DID_SET_PMA_HOST=false
@@ -318,7 +147,7 @@ parse_args() {
     DO_MYSQL=true; DO_PMA=true; DO_GITLAB=true; DO_K3S=true; DO_AWX=true; DO_CERTS=true; DO_NGINX=true
   fi
 
-  # If user only changed --domain, recompute hosts accordingly
+  # Recompute hosts if only --domain was changed
   if ! $DID_SET_GITLAB_HOST; then GITLAB_HOST="gitlab.${DOMAIN}"; fi
   if ! $DID_SET_AWX_HOST; then AWX_HOST="awx.${DOMAIN}"; fi
   if ! $DID_SET_PMA_HOST; then PMA_HOST="pma.${DOMAIN}"; fi
@@ -342,7 +171,7 @@ ensure_compose() {
   if ! docker compose version >/dev/null 2>&1; then
     log "Installing docker compose plugin"
     mkdir -p /usr/local/lib/docker/cli-plugins
-    curl -L https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-$(uname -s)-$(uname -m) \
+    curl -L "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-$(uname -s)-$(uname -m)" \
       -o /usr/local/lib/docker/cli-plugins/docker-compose
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
   fi
@@ -434,14 +263,11 @@ volumes:
 YAML
 }
 
-
 compose_up() {
   (cd "$COMPOSE_DIR" && docker compose up -d)
 }
 
 mysql_bootstrap_db_user() {
-  # No-op: DB and user are now created by the MySQL image on first init via env vars
-  # Still wait briefly until healthy for nicer UX
   log "Waiting for MySQL to report healthy"
   for i in {1..60}; do
     if docker exec compose-mysql-1 mysqladmin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent >/dev/null 2>&1; then
@@ -538,7 +364,6 @@ NGINX
 ensure_k3s_config() {
   install -d -m 755 /etc/rancher/k3s
   local cfg=/etc/rancher/k3s/config.yaml
-  # Backup existing config if we are changing it
   if [[ -f "$cfg" ]] && ! grep -q "disable:" "$cfg"; then
     cp "$cfg" "$cfg.bak.$(date +%s)" || true
   fi
@@ -572,10 +397,8 @@ EOF
 
   systemctl daemon-reload
   systemctl enable stackctl-compose.service
-  # Start it now as well (idempotent if containers already running)
   systemctl start stackctl-compose.service || true
 }
-
 
 install_k3s() {
   ensure_k3s_config
@@ -588,10 +411,8 @@ install_k3s() {
   curl -sfL https://get.k3s.io | sh -
 }
 
-# After k3s is ready, make sure any leftover Traefik/ServiceLB resources are gone
 cleanup_k3s_port_claimers() {
   export KUBECONFIG="$K3S_KUBECONFIG"
-  # These may or may not exist depending on timing; ignore errors
   kubectl -n kube-system delete deploy/traefik --ignore-not-found
   kubectl -n kube-system delete svc/traefik --ignore-not-found
   kubectl -n kube-system delete ds/svclb-traefik --ignore-not-found
@@ -611,6 +432,21 @@ install_awx_operator() {
   kubectl create ns "$AWX_NAMESPACE" 2>/dev/null || true
   log "Deploying AWX Operator (version ${AWX_OPERATOR_VERSION})"
   kubectl apply -k "https://github.com/ansible/awx-operator/config/default?ref=${AWX_OPERATOR_VERSION}" -n "$AWX_NAMESPACE"
+}
+
+# NEW: wait until the AWX CRD exists to avoid the race you hit
+wait_for_awx_crd() {
+  export KUBECONFIG="$K3S_KUBECONFIG"
+  log "Waiting for AWX CRDs to register..."
+  for i in {1..60}; do
+    if kubectl get crd awxs.awx.ansible.com >/dev/null 2>&1; then
+      log "AWX CRD found"
+      return 0
+    fi
+    sleep 2
+  done
+  err "Timed out waiting for AWX CRD"
+  return 1
 }
 
 deploy_awx() {
@@ -654,7 +490,7 @@ import sys, json, subprocess
 ip,a,b,c = sys.argv[1:]
 ns="kube-system"; name="coredns"
 
-# Ensure Corefile points at NodeHosts file (k3s default, but make sure)
+# Ensure Corefile points at NodeHosts file
 d=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
 core=d["data"].get("Corefile","")
 needle="hosts /etc/coredns/NodeHosts {"
@@ -726,7 +562,7 @@ print_summary() {
 }
 
 status() {
-  echo "Docker containers:"; docker ps --format 'table {{.Names}}	{{.Image}}	{{.Status}}	{{.Ports}}'
+  echo "Docker containers:"; docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
   echo
   echo "Kubernetes (k3s) AWX pods:"; export KUBECONFIG="$K3S_KUBECONFIG"; kubectl -n "$AWX_NAMESPACE" get pods 2>/dev/null || true
   echo
@@ -737,7 +573,6 @@ status() {
 need_root
 parse_args "$@"
 check_os
-write_stack_env
 
 if $DO_MYSQL || $DO_PMA || $DO_GITLAB || $DO_NGINX || $DO_CERTS || $DO_K3S || $DO_AWX || $DO_ALL; then
   apt_install
