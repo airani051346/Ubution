@@ -460,9 +460,14 @@ spec:
   service_type: NodePort
   nodeport_port: ${AWX_NODEPORT}
   ingress_type: none
+  host_aliases:
+    - ip: ${SERVER_IP}
+      hostnames:
+        - ${GITLAB_HOST}
+        - ${AWX_HOST}
+        - ${PMA_HOST}
 YAML
 }
-
 patch_coredns_hosts() {
   if ! $DO_DNS_PATCH; then return; fi
   export KUBECONFIG="$K3S_KUBECONFIG"
