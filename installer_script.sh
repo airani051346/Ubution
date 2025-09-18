@@ -145,6 +145,20 @@ get_primary_ip() {
   echo "$ip"
 }
 
+wait_for_awx_crd() {
+  export KUBECONFIG="$K3S_KUBECONFIG"
+  echo "[+] Waiting for AWX CRDs to register..."
+  for i in {1..60}; do
+    if kubectl get crd awxs.awx.ansible.com >/dev/null 2>&1; then
+      echo "[+] AWX CRD found"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "[!] Timed out waiting for AWX CRD" >&2
+  return 1
+}
+
 wait_for_k8s(){
   for i in {1..90}; do
     kubectl get nodes >/dev/null 2>&1 && return 0
@@ -755,6 +769,7 @@ fi
 if $DO_AWX; then
   kube_ready
   install_awx_operator
+  wait_for_awx_crd
   deploy_awx
 fi
 
