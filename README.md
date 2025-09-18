@@ -229,7 +229,7 @@ sudo k3s ctr images ls | grep awx-ee
 # Use it in AWX without a registry (same Docker host)
 AWX → Administration → Execution Environments → Add<br>
 Name: CP EE (Mgmt+Gaia)<br>
-Image: awx-ee:cp-gaia-mgmt     ← must match your local tag<br>
+Image: docker.io/library/awx-ee:cp-gaia-mgmt     ← must match your local tag<br>
 Pull policy: Missing (or Never)<br>
 Registry credential: (leave empty)<br>
 
