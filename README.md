@@ -110,38 +110,34 @@ copy the private key on awx
 - Source controlURL is from your git-repository
 <img width="975" height="416" alt="image" src="https://github.com/user-attachments/assets/bd49a921-b0c8-4aed-ba5e-a248c7354d41" />
 <br>
-# connection issues?
-following short script adds your main IP address into the coredns records and restarts the kube:
-```bash
-SERVER_IP=$(hostname -I | awk '{print $1}')
-Domain=<Domain.com>
-kubectl -n kube-system get cm coredns -o json \
-  | jq --arg add "$SERVER_IP gitlab.$Domain awx.$Domain pma.$Domain\n" '.data.NodeHosts = (.data.NodeHosts + $add)' | kubectl apply -f -
 
-kubectl -n kube-system rollout restart deploy/coredns
-kubectl -n kube-system rollout status deploy/coredns --timeout=90s
-```
 
 Wait for the project to synchronize: AWX will automatically synchronize the project with the Git repository. You can monitor the progress in the “Projects” tab.
+
 # Creating a new inventory:
 o	Navigate to the “Inventories” tab and click “Add”.
 o	Name your inventory and define it as needed.
 o	In the inventory, you can add groups and hosts that will be the target of your Ansible playbooks.
+
 # Creating a job template:
 o	Navigate to the “Templates” tab and click “Add” → “Job Template”.
 o	Name the template, select the project you created earlier, and the playbook you want to run.
 o	Select the inventory you will use.
 o	In the “Credentials” section, add the credentials necessary to connect to your servers (e.g., SSH keys).
 o	Save the template.
-# Add your own execution environment
 
+# Add your own execution environment
 ```bash
 sudo apt-get install python3-pip -y
 sudo pip install ansible-builder
 
-sudo mkdir -p /opt/stack/ee/awx-ee
-cat > /opt/stack/ee/awx-ee/execution-environment.yml <<'YAML'
-# your file as provided
+sudo mkdir /opt/stack/ee/awx-ee
+cd /opt/stack/ee/awx-ee
+```
+put following content into execution-environment.yml
+
+```YAML
+---
 version: 3
 images:
   base_image:
@@ -201,8 +197,8 @@ additional_build_steps:
     - RUN pip config set global.retries 5
     - ENV PIP_DEFAULT_TIMEOUT=600
     - ENV PIP_NO_CACHE_DIR=1
-YAML
 ```
+now run following commands after providing your domain name
 
 ```bash
 REGISTRY_HOST=registry.<DOMAIN>
@@ -211,11 +207,12 @@ sudo ansible-builder build -t ${REGISTRY_HOST}/awx-ee:latest -f execution-enviro
 
 echo "${REGISTRY_PASS}" | sudo docker login "https://${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
 sudo docker push ${REGISTRY_HOST}/awx-ee:latest
-
-sanity check
-curl -s --user "${REGISTRY_USER}:${REGISTRY_PASS}" https://${REGISTRY_HOST}/v2/_catalog
-# -> should list {"repositories":["awx-ee"]} after push
 ```
+sanity check
+```bash
+curl -s --user "${REGISTRY_USER}:${REGISTRY_PASS}" https://${REGISTRY_HOST}/v2/_catalog
+```
+-> should list {"repositories":["awx-ee"]} 
 
 # execution env-check: verify end-to-end
 kubectl -n awx run reg-check --image=${REGISTRY_HOST}/awx-ee:latest --restart=Never --command -- sleep 1
