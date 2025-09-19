@@ -218,8 +218,8 @@ sudo bash -lc 'IP='"$IP"'; for h in registry.fritz.lan gitlab.fritz.lan awx.frit
 done'
 
 
-echo "${REGISTRY_PASS}" | sudo docker login "https://${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
-sudo docker push ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt
+printf 'ChangeMe!Reg123' | docker login http://127.0.0.1:5000 -u awx --password-stdin
+sudo docker push registry.<DOMAIN>/awx-ee:cp-gaia-mgmt
 ```
 sanity check
 ```bash
