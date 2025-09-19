@@ -382,8 +382,8 @@ server {
   proxy_request_buffering off;
 
   location /v2/ {
-    proxy_set_header Host              $host;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header Host              \$host;
+    proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto https;
     proxy_pass http://127.0.0.1:5000;
   }
@@ -549,11 +549,12 @@ spec:
         - ${REGISTRY_HOST}
 YAML
 }
+
 patch_coredns_hosts() {
   if ! $DO_DNS_PATCH; then return; fi
   export KUBECONFIG="$K3S_KUBECONFIG"
 
-  local A_HOST="$GITLAB_HOST" B_HOST="$AWX_HOST" C_HOST="$PMA_HOST"
+  local A_HOST="$GITLAB_HOST" B_HOST="$AWX_HOST" C_HOST="$PMA_HOST" D_HOST="$REGISTRY_HOST"
   if [[ "$A_HOST" == "gitlab.example.lan" || "$B_HOST" == "awx.example.lan" || "$C_HOST" == "pma.example.lan" ]]; then
     log "Skipping CoreDNS patch: hostnames still set to example.lan. Pass --domain/--*-host to set real names."
     return 0
@@ -569,16 +570,15 @@ patch_coredns_hosts() {
   fi
 
   local CUR_IP; CUR_IP="$(get_primary_ip)"
-  log "Syncing CoreDNS NodeHosts -> ${CUR_IP} ${A_HOST} ${B_HOST} ${C_HOST}"
+  log "Syncing CoreDNS NodeHosts -> ${CUR_IP} ${A_HOST} ${B_HOST} ${C_HOST} ${D_HOST}"
 
-  python3 - "$CUR_IP" "$A_HOST" "$B_HOST" "$C_HOST" <<'PY'
+  python3 - "$CUR_IP" "$A_HOST" "$B_HOST" "$C_HOST" "$D_HOST" <<'PY'
 import sys, json, subprocess
-ip,a,b,c = sys.argv[1:]
+ip,a,b,c,d = sys.argv[1:]
 ns="kube-system"; name="coredns"
 
-# Ensure Corefile points at NodeHosts file
-d=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
-core=d["data"].get("Corefile","")
+dobj=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
+core=dobj["data"].get("Corefile","")
 needle="hosts /etc/coredns/NodeHosts {"
 if needle not in core:
     ins = "    hosts /etc/coredns/NodeHosts {\n        ttl 60\n        reload 15s\n        fallthrough\n    }\n"
@@ -587,27 +587,26 @@ if needle not in core:
         core = core.replace(fwd, ins + "    " + fwd)
     else:
         core = core + "\n" + ins
-    d["data"]["Corefile"]=core
-    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode(), check=True)
+    dobj["data"]["Corefile"]=core
+    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(dobj).encode(), check=True)
 
-# Update NodeHosts content idempotently
-d=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
-nodehosts=d["data"].get("NodeHosts","")
-targets={a,b,c}
+dobj=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
+nodehosts=dobj["data"].get("NodeHosts","")
+targets={a,b,c,d}
 def line_has_targets(ln):
     toks=ln.split()
     return any(h in toks[1:] for h in targets)
 lines=[ln for ln in nodehosts.splitlines() if ln.strip() and not line_has_targets(ln)]
-lines.append(f"{ip} {a} {b} {c}")
+lines.append(f"{ip} {a} {b} {c} {d}")
 new="\n".join(lines)+"\n"
 
-changed = d["data"].get("NodeHosts","") != new
-if changed:
-    d["data"]["NodeHosts"]=new
-    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(d).encode(), check=True)
+if dobj["data"].get("NodeHosts","") != new:
+    dobj["data"]["NodeHosts"]=new
+    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(dobj).encode(), check=True)
     subprocess.run(["kubectl","-n",ns,"rollout","restart","deploy/coredns"], check=True)
 PY
 }
+
 
 awx_admin_password() {
   export KUBECONFIG="$K3S_KUBECONFIG"
@@ -661,7 +660,7 @@ need_root
 parse_args "$@"
 check_os
 
-if $DO_MYSQL || $DO_PMA || $DO_GITLAB || $DO_NGINX || $DO_CERTS || $DO_K3S || $DO_AWX || $DO_ALL; then
+if $DO_MYSQL || $DO_PMA || $DO_GITLAB || $DO_NGINX || $DO_CERTS || $DO_K3S || $DO_AWX || $DO_ALL || $DO_REGISTRY; then
   apt_install
   ensure_compose
 fi
