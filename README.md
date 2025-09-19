@@ -136,16 +136,13 @@ o	Save the template.
 # Add your own execution environment
 
 ```bash
-mkdir ~/custim-ee && cd custim-ee
-vi execution-environment.yml
-```
+sudo apt-get install python3-pip -y
+sudo pip install ansible-builder
 
-put following content in the execution-environment.yml file
-
-```text
----
+sudo mkdir -p /opt/stack/ee/awx-ee
+cat > /opt/stack/ee/awx-ee/execution-environment.yml <<'YAML'
+# your file as provided
 version: 3
-
 images:
   base_image:
     name: quay.io/ansible/awx-ee:latest
@@ -183,14 +180,11 @@ dependencies:
       - name: check_point.mgmt
       - name: check_point.gaia
       - name: ansible.netcommon
-
   system:
-    # base tools
     - git
     - sshpass
     - docker
     - subversion
-    # build deps to avoid source build failures (safe to include)
     - gcc
     - make
     - python3-devel
@@ -200,7 +194,6 @@ dependencies:
     - libxslt-devel
 
 additional_build_steps:
-  # This runs in the *builder* stage, before /output/scripts/assemble
   prepend_builder:
     - RUN /usr/bin/python3 -m pip install --upgrade pip setuptools wheel
     - RUN pip config set global.index-url https://pypi.org/simple
@@ -208,39 +201,39 @@ additional_build_steps:
     - RUN pip config set global.retries 5
     - ENV PIP_DEFAULT_TIMEOUT=600
     - ENV PIP_NO_CACHE_DIR=1
-
+YAML
 ```
 
-now run following command to create your run-time environment <br>
-do not move this apt-get install and pip install to earlier stage! <br>
 ```bash
-sudo apt-get install python3-pip -y
-sudo pip install ansible-builder
+REGISTRY_HOST=registry.<DOMAIN>
+sudo cd /opt/stack/ee/awx-ee
+sudo ansible-builder build -t ${REGISTRY_HOST}/awx-ee:latest -f execution-environment.yml --container-runtime docker
 
-#old - sudo ansible-builder build -t awx-ee:cp-gaia-mgmt -f execution-environment.yml
-docker run -d --restart=always --name registry -p 5000:5000 registry:2
-docker tag awx-ee:latest <SERVER_IP>:5000/awx-ee:cp-gaia-mgmt
-docker push <SERVER_IP>:5000/awx-ee:cp-gaia-mgmt
+echo "${REGISTRY_PASS}" | sudo docker login "https://${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
+sudo docker push ${REGISTRY_HOST}/awx-ee:latest
 
-A) In the AWX UI (recommended)
-Create a Credential → Container Registry with the registry URL + username/token.
-Edit Execution Environments → your EE and set the Pull credential to that registry credential.
-Put the image name (e.g., docker.io/user/awx-ee:cp-gaia-mgmt) in the EE record.
-
-sudo docker save awx-ee:cp-gaia-mgmt -o /tmp/ee.tar
-sudo k3s ctr images import /tmp/ee.tar
-
-
-sanity check:
-sudo k3s ctr images ls | grep awx-ee
+sanity check
+curl -s --user "${REGISTRY_USER}:${REGISTRY_PASS}" https://${REGISTRY_HOST}/v2/_catalog
+# -> should list {"repositories":["awx-ee"]} after push
 ```
+
+# execution env-check: verify end-to-end
+kubectl -n awx run reg-check --image=${REGISTRY_HOST}/awx-ee:latest --restart=Never --command -- sleep 1
+kubectl -n awx logs reg-check || true
+kubectl -n awx delete pod reg-check
 
 # Use it in AWX without a registry (same Docker host)
-AWX → Administration → Execution Environments → Add<br>
-Name: CP EE (Mgmt+Gaia)<br>
-Image: docker.io/library/awx-ee:cp-gaia-mgmt     ← must match your local tag<br>
-Pull policy: Missing (or Never)<br>
-Registry credential: (leave empty)<br>
+In the AWX UI:
+Credentials → Add → “Container Registry”
+Registry URL: https://${REGISTRY_HOST}
+Username/Password: ${REGISTRY_USER} / ${REGISTRY_PASS}
+Administration → Execution Environments → Add
+Name: “Local EE”
+Image: ${REGISTRY_HOST}/awx-ee:latest
+Pull: Always (at least initially)
+Credential: the Container Registry credential from step 1
+Use this EE on your Job Template (or set as default).
+AWX will auto-create a Kubernetes imagePullSecret from the Container Registry credential and attach it to the job pod. With our CoreDNS patch and k3s trust in place, the pull succeeds fully locally.
 
 <img width="1641" height="776" alt="image" src="https://github.com/user-attachments/assets/e8b9222b-57d3-4050-a117-199428d729f0" />
 
@@ -259,8 +252,23 @@ Run a test job with a simple playbook:
     - debug: var=result.stdout
 ```
 
-# ip address of mysql docker compose 
+Troubleshooting notes
 
+x509 / unknown authority when k3s pulls<br>
+Make sure ensure_registry_trust_for_k3s ran: the mkcert root CA must be in /usr/local/share/ca-certificates/mkcert-rootCA.crt, update-ca-certificates succeeded, and systemctl restart k3s was done.<br>
+Also confirm /etc/rancher/k3s/registries.yaml exists and points tls.ca_file to that cert.<br>
+
+Name resolution failure:<br>
+Re-run --dns-patch (or any flow that calls patch_coredns_hosts). Ensure ${REGISTRY_HOST} appears in CoreDNS NodeHosts and in your AWX host_aliases.<br>
+
+Auth denied:<br>
+Confirm the Container Registry credential is associated with the Execution Environment.<br>
+Manually docker login https://${REGISTRY_HOST} on the host to verify creds.<br>
+
+Already-generated cert without registry hostname:<br>
+Remove $CERT_PEM and $CERT_KEY, then re-run --certs to include ${REGISTRY_HOST}.<br>
+
+# ip address of mysql docker compose 
 ```bash
 sudo docker ps
 sudo docker inspect -f '{{.Name}} -> {{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' compose-mysql-1
