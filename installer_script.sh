@@ -59,7 +59,16 @@ APP_DB_NAME=appdb
 APP_DB_USER=awx_app
 APP_DB_PASS="AppDbStrong!123"
 
+# ---- Local registry ----
+: "${REGISTRY_HOST:=registry.${DOMAIN}}"
+: "${REGISTRY_USER:=awx}"
+: "${REGISTRY_PASS:=ChangeMe!Reg123}"
+REGISTRY_DIR="$STACK_DIR/registry"
+REGISTRY_AUTH_FILE="$REGISTRY_DIR/htpasswd"
+REGISTRY_DATA_DIR="$REGISTRY_DIR/data"
+
 # Internal flags (targets)
+DO_REGISTRY=false
 DO_MYSQL=false
 DO_PMA=false
 DO_GITLAB=false
@@ -87,7 +96,7 @@ usage() {
 Usage: $0 [--all] [--mysql] [--pma] [--gitlab] [--nginx] [--certs] [--k3s] [--awx] [--status]
            [--domain DOMAIN] [--gitlab-host HOST] [--awx-host HOST] [--pma-host HOST]
            [--server-ip IP] [--mysql-port PORT] [--mysql-root-pass PASS]
-           [--app-db-name NAME] [--app-db-user USER] [--app-db-pass PASS]
+           [--app-db-name NAME] [--app-db-user USER] [--app-db-pass PASS] [--registry]
            [--gitlab-ssh-port PORT] [--awx-nodeport PORT] [--dns-patch] [--no-dns-patch]
 
 Examples:
@@ -124,6 +133,7 @@ parse_args() {
       --awx) DO_AWX=true ;;
       --dns-patch) DO_PATCH_DNS=true ;;
       --status) DO_STATUS=true ;;
+      --registry) DO_REGISTRY=true ;;
       --no-dns-patch) DO_DNS_PATCH=false ;;
       --domain) DOMAIN="$2"; shift ;;
       --gitlab-host) GITLAB_HOST="$2"; DID_SET_GITLAB_HOST=true; shift ;;
@@ -163,7 +173,7 @@ apt_install() {
   DEBIAN_FRONTEND=noninteractive apt-get update -y
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
     apt-transport-https ca-certificates curl gnupg lsb-release jq git make openssl \
-    docker.io nginx python3 python3-yaml
+    docker.io nginx python3 python3-yaml apache2-utils
   systemctl enable --now docker nginx
 }
 
@@ -186,12 +196,46 @@ install_mkcert() {
   fi
 }
 
+ensure_registry_trust_for_k3s() {
+  install -d -m 755 /etc/rancher/k3s
+  local reg=/etc/rancher/k3s/registries.yaml
+  local caroot
+  caroot=$(mkcert -CAROOT)
+
+  # Install mkcert root CA into system trust (helps containerd)
+  install -D -m 644 "${caroot}/rootCA.pem" /usr/local/share/ca-certificates/mkcert-rootCA.crt || true
+  update-ca-certificates || true
+
+  cat >"$reg" <<EOF
+mirrors:
+  ${REGISTRY_HOST}:
+    endpoint:
+      - "https://${REGISTRY_HOST}"
+configs:
+  ${REGISTRY_HOST}:
+    tls:
+      ca_file: /usr/local/share/ca-certificates/mkcert-rootCA.crt
+EOF
+
+  systemctl restart k3s
+}
+
+
+setup_registry_auth() {
+  mkdir -p "$REGISTRY_DIR" "$REGISTRY_DATA_DIR"
+  if [[ ! -s "$REGISTRY_AUTH_FILE" ]]; then
+    log "Creating registry htpasswd for ${REGISTRY_USER}"
+    docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$REGISTRY_USER" "$REGISTRY_PASS" > "$REGISTRY_AUTH_FILE"
+    chmod 640 "$REGISTRY_AUTH_FILE"
+  fi
+}
+
+
 make_certs() {
   mkdir -p "$CERT_DIR"
   if [[ ! -s "$CERT_PEM" || ! -s "$CERT_KEY" ]]; then
-    log "Generating SAN cert for $GITLAB_HOST, $AWX_HOST, $PMA_HOST"
-    mkcert -cert-file "$CERT_PEM" -key-file "$CERT_KEY" \
-      "$GITLAB_HOST" "$AWX_HOST" "$PMA_HOST"
+    log "Generating SAN cert for $GITLAB_HOST, $AWX_HOST, $PMA_HOST, $REGISTRY_HOST"
+    mkcert -cert-file "$CERT_PEM" -key-file "$CERT_KEY" "$GITLAB_HOST" "$AWX_HOST" "$PMA_HOST" "$REGISTRY_HOST"
   else
     log "Existing certs found in $CERT_DIR (skipping)"
   fi
@@ -221,6 +265,22 @@ services:
       - mysql_data:/var/lib/mysql
     networks: [back]
 
+  registry:
+    image: registry:2
+    restart: unless-stopped
+    environment:
+      REGISTRY_HTTP_ADDR: "0.0.0.0:5000"
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_AUTH: "htpasswd"
+      REGISTRY_AUTH_HTPASSWD_REALM: "Registry"
+      REGISTRY_AUTH_HTPASSWD_PATH: "/auth/htpasswd"
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ${REGISTRY_DATA_DIR}:/var/lib/registry
+      - ${REGISTRY_AUTH_FILE}:/auth/htpasswd:ro
+    networks: [back]
+    
   phpmyadmin:
     image: phpmyadmin:latest
     restart: unless-stopped
@@ -260,6 +320,7 @@ volumes:
   gitlab_config:
   gitlab_logs:
   gitlab_data:
+  registry_data:
 YAML
 }
 
@@ -283,7 +344,7 @@ write_nginx() {
 # Redirect HTTP -> HTTPS for all hosts
 server {
   listen 80;
-  server_name ${GITLAB_HOST} ${AWX_HOST} ${PMA_HOST};
+  server_name ${GITLAB_HOST} ${AWX_HOST} ${PMA_HOST} ${REGISTRY_HOST};
   return 301 https://\$host\$request_uri;
 }
 
@@ -308,6 +369,25 @@ server {
   }
 }
 
+# ============= Local Docker Registry =============
+server {
+  listen 443 ssl http2;
+  server_name ${REGISTRY_HOST};
+
+  ssl_certificate     ${CERT_PEM};
+  ssl_certificate_key ${CERT_KEY};
+
+  # Docker registry likes streaming uploads
+  client_max_body_size 1g;
+  proxy_request_buffering off;
+
+  location /v2/ {
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_pass http://127.0.0.1:5000;
+  }
+}
 # ============= AWX =============
 server {
   listen 443 ssl http2;
@@ -466,6 +546,7 @@ spec:
         - ${GITLAB_HOST}
         - ${AWX_HOST}
         - ${PMA_HOST}
+        - ${REGISTRY_HOST}
 YAML
 }
 patch_coredns_hosts() {
@@ -563,6 +644,7 @@ print_summary() {
   echo "- AWX pods can resolve ${GITLAB_HOST} and reach it via Nginx on this node (CoreDNS patched)."
   echo "- AWX/Ansible can reach MySQL at ${SERVER_IP}:${MYSQL_PORT}."
   echo "- phpMyAdmin manages the same MySQL database; credentials above."
+  echo "Local Registry:   https://$REGISTRY_HOST (user: $REGISTRY_USER)"
   echo "===================================================="
 }
 
@@ -620,6 +702,21 @@ fi
 
 if $DO_NGINX; then
   write_nginx
+fi
+
+if $DO_REGISTRY; then
+  install_mkcert
+  make_certs
+  setup_registry_auth
+  # Ensure compose file contains registry service
+  write_compose
+  compose_up
+  write_nginx
+  ensure_registry_trust_for_k3s
+  if $DO_DNS_PATCH || $DO_K3S || $DO_AWX; then
+    kube_ready || true
+    patch_coredns_hosts || true
+  fi
 fi
 
 if $DO_STATUS; then
