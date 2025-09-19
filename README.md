@@ -209,6 +209,15 @@ sudo mkdir -p /etc/docker/certs.d/registry.fritz.lan
 sudo cp "$(sudo mkcert -CAROOT)/rootCA.pem" /etc/docker/certs.d/registry.fritz.lan/ca.crt
 sudo systemctl restart docker
 
+# pick the primary IP of this node
+IP=$(ip -4 route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if ($i=="src"){print $(i+1); exit}}')
+
+# add your app FQDNs (idempotent-ish)
+sudo bash -lc 'IP='"$IP"'; for h in registry.fritz.lan gitlab.fritz.lan awx.fritz.lan pma.fritz.lan; do
+  grep -qE "^[[:space:]]*$IP[[:space:]]+$h([[:space:]]|\$)" /etc/hosts || echo "$IP $h" >> /etc/hosts
+done'
+
+
 echo "${REGISTRY_PASS}" | sudo docker login "https://${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
 sudo docker push ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt
 ```
