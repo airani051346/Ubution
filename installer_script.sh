@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================
-# stackctl.sh (cleaned)
+# stackctl.sh (corrected)
 # One-host setup for:
 #   - Docker + docker compose plugin
 #   - MySQL 8 (Docker)
@@ -10,9 +10,10 @@ set -euo pipefail
 #   - GitLab Omnibus (Docker)
 #   - Nginx (host) TLS reverse proxy
 #   - k3s (Kubernetes) + AWX Operator + AWX (NodePort)
+#   - Local Docker Registry with basic auth
 #
 # HTTPS for all apps via Nginx (mkcert for LAN/dev).
-# CoreDNS patch allows pods to resolve hostnames (gitlab/awx/pma) to this node IP.
+# CoreDNS patch allows pods to resolve hostnames (gitlab/awx/pma/registry) to this node IP.
 # ==============================================
 
 # ----------------- Defaults -----------------
@@ -78,8 +79,8 @@ DO_K3S=false
 DO_AWX=false
 DO_STATUS=false
 DO_ALL=false
-DO_DNS_PATCH=true   # run CoreDNS patch during --k3s
-DO_PATCH_DNS=false  # run only the CoreDNS patch step (with --dns-patch)
+DO_DNS_PATCH=true    # run CoreDNS patch during --k3s
+DO_PATCH_DNS=false   # run only the CoreDNS patch step (with --dns-patch)
 
 # ----------------- Helpers -----------------
 log() { echo -e "[+] $*"; }
@@ -93,10 +94,10 @@ need_root() {
 
 usage() {
   cat <<USAGE
-Usage: $0 [--all] [--mysql] [--pma] [--gitlab] [--nginx] [--certs] [--k3s] [--awx] [--status]
-           [--domain DOMAIN] [--gitlab-host HOST] [--awx-host HOST] [--pma-host HOST]
+Usage: $0 [--all] [--mysql] [--pma] [--gitlab] [--nginx] [--certs] [--k3s] [--awx] [--status] [--registry]
+           [--domain DOMAIN] [--gitlab-host HOST] [--awx-host HOST] [--pma-host HOST] [--registry-host HOST]
            [--server-ip IP] [--mysql-port PORT] [--mysql-root-pass PASS]
-           [--app-db-name NAME] [--app-db-user USER] [--app-db-pass PASS] [--registry]
+           [--app-db-name NAME] [--app-db-user USER] [--app-db-pass PASS]
            [--gitlab-ssh-port PORT] [--awx-nodeport PORT] [--dns-patch] [--no-dns-patch]
 
 Examples:
@@ -104,6 +105,7 @@ Examples:
   sudo bash $0 --mysql --pma
   sudo bash $0 --gitlab
   sudo bash $0 --k3s --awx
+  sudo bash $0 --registry --domain fritz.lan --registry-host registry.fritz.lan
   sudo bash $0 --status
 USAGE
 }
@@ -120,6 +122,7 @@ parse_args() {
   local DID_SET_GITLAB_HOST=false
   local DID_SET_AWX_HOST=false
   local DID_SET_PMA_HOST=false
+  local DID_SET_REGISTRY_HOST=false
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -139,6 +142,7 @@ parse_args() {
       --gitlab-host) GITLAB_HOST="$2"; DID_SET_GITLAB_HOST=true; shift ;;
       --awx-host) AWX_HOST="$2"; DID_SET_AWX_HOST=true; shift ;;
       --pma-host) PMA_HOST="$2"; DID_SET_PMA_HOST=true; shift ;;
+      --registry-host) REGISTRY_HOST="$2"; DID_SET_REGISTRY_HOST=true; shift ;;
       --server-ip) SERVER_IP="$2"; shift ;;
       --mysql-port) MYSQL_PORT="$2"; shift ;;
       --mysql-root-pass) MYSQL_ROOT_PASSWORD="$2"; shift ;;
@@ -154,13 +158,14 @@ parse_args() {
   done
 
   if $DO_ALL; then
-    DO_MYSQL=true; DO_PMA=true; DO_GITLAB=true; DO_K3S=true; DO_AWX=true; DO_CERTS=true; DO_NGINX=true
+    DO_MYSQL=true; DO_PMA=true; DO_GITLAB=true; DO_K3S=true; DO_AWX=true; DO_CERTS=true; DO_NGINX=true; DO_REGISTRY=true
   fi
 
   # Recompute hosts if only --domain was changed
-  if ! $DID_SET_GITLAB_HOST; then GITLAB_HOST="gitlab.${DOMAIN}"; fi
-  if ! $DID_SET_AWX_HOST; then AWX_HOST="awx.${DOMAIN}"; fi
-  if ! $DID_SET_PMA_HOST; then PMA_HOST="pma.${DOMAIN}"; fi
+  if ! $DID_SET_GITLAB_HOST;   then GITLAB_HOST="gitlab.${DOMAIN}";     fi
+  if ! $DID_SET_AWX_HOST;      then AWX_HOST="awx.${DOMAIN}";           fi
+  if ! $DID_SET_PMA_HOST;      then PMA_HOST="pma.${DOMAIN}";           fi
+  if ! $DID_SET_REGISTRY_HOST; then REGISTRY_HOST="registry.${DOMAIN}"; fi
 }
 
 check_os() {
@@ -217,9 +222,8 @@ configs:
       ca_file: /usr/local/share/ca-certificates/mkcert-rootCA.crt
 EOF
 
-  systemctl restart k3s
+  systemctl restart k3s || true
 }
-
 
 setup_registry_auth() {
   mkdir -p "$REGISTRY_DIR" "$REGISTRY_DATA_DIR"
@@ -230,21 +234,36 @@ setup_registry_auth() {
   fi
 }
 
-
 make_certs() {
   mkdir -p "$CERT_DIR"
-  if [[ ! -s "$CERT_PEM" || ! -s "$CERT_KEY" ]]; then
-    log "Generating SAN cert for $GITLAB_HOST, $AWX_HOST, $PMA_HOST, $REGISTRY_HOST"
-    mkcert -cert-file "$CERT_PEM" -key-file "$CERT_KEY" "$GITLAB_HOST" "$AWX_HOST" "$PMA_HOST" "$REGISTRY_HOST"
+  local need=0
+  if [[ -s "$CERT_PEM" && -s "$CERT_KEY" ]]; then
+    for h in "$GITLAB_HOST" "$AWX_HOST" "$PMA_HOST" "$REGISTRY_HOST"; do
+      if ! openssl x509 -in "$CERT_PEM" -noout -text 2>/dev/null | grep -q "DNS:${h}"; then
+        need=1
+      fi
+    done
   else
-    log "Existing certs found in $CERT_DIR (skipping)"
+    need=1
+  fi
+
+  if [[ $need -eq 1 ]]; then
+    log "Generating SAN cert for $GITLAB_HOST, $AWX_HOST, $PMA_HOST, $REGISTRY_HOST"
+    mkcert -cert-file "$CERT_PEM" -key-file "$CERT_KEY" \
+      "$GITLAB_HOST" "$AWX_HOST" "$PMA_HOST" "$REGISTRY_HOST"
+  else
+    log "Existing cert already has required SANs (skipping)"
   fi
 }
 
 write_compose() {
   mkdir -p "$COMPOSE_DIR"
-  cat > "$COMPOSE_FILE" <<YAML
-services:
+  : > "$COMPOSE_FILE"
+  echo "services:" >> "$COMPOSE_FILE"
+
+  # MySQL (required if DO_MYSQL or DO_PMA)
+  if $DO_MYSQL || $DO_PMA; then
+cat >> "$COMPOSE_FILE" <<YAML
   mysql:
     image: mysql:8.4
     restart: unless-stopped
@@ -256,7 +275,7 @@ services:
     ports:
       - "0.0.0.0:${MYSQL_PORT}:3306"
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      test: ["CMD-SHELL", "mysqladmin ping -uroot -p\$${MYSQL_ROOT_PASSWORD} --silent"]
       interval: 5s
       timeout: 3s
       retries: 60
@@ -264,7 +283,12 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     networks: [back]
+YAML
+  fi
 
+  # Local Registry
+  if $DO_REGISTRY; then
+cat >> "$COMPOSE_FILE" <<YAML
   registry:
     image: registry:2
     restart: unless-stopped
@@ -280,7 +304,12 @@ services:
       - ${REGISTRY_DATA_DIR}:/var/lib/registry
       - ${REGISTRY_AUTH_FILE}:/auth/htpasswd:ro
     networks: [back]
-    
+YAML
+  fi
+
+  # phpMyAdmin (requires MySQL)
+  if $DO_PMA; then
+cat >> "$COMPOSE_FILE" <<YAML
   phpmyadmin:
     image: phpmyadmin:latest
     restart: unless-stopped
@@ -291,7 +320,12 @@ services:
     ports:
       - "127.0.0.1:${PMA_BIND_PORT}:80"
     networks: [back]
+YAML
+  fi
 
+  # GitLab
+  if $DO_GITLAB; then
+cat >> "$COMPOSE_FILE" <<YAML
   gitlab:
     image: gitlab/gitlab-ee:latest
     restart: unless-stopped
@@ -311,17 +345,26 @@ services:
       - gitlab_logs:/var/log/gitlab
       - gitlab_data:/var/opt/gitlab
     networks: [back]
+YAML
+  fi
+
+  # Networks
+cat >> "$COMPOSE_FILE" <<'YAML'
 
 networks:
   back:
 
 volumes:
-  mysql_data:
-  gitlab_config:
-  gitlab_logs:
-  gitlab_data:
-  registry_data:
 YAML
+
+  # Volumes conditionally
+  if $DO_MYSQL || $DO_PMA; then echo "  mysql_data:" >> "$COMPOSE_FILE"; fi
+  if $DO_GITLAB; then
+    echo "  gitlab_config:" >> "$COMPOSE_FILE"
+    echo "  gitlab_logs:"   >> "$COMPOSE_FILE"
+    echo "  gitlab_data:"   >> "$COMPOSE_FILE"
+  fi
+  if $DO_REGISTRY; then echo "  registry_data:" >> "$COMPOSE_FILE"; fi
 }
 
 compose_up() {
@@ -388,6 +431,7 @@ server {
     proxy_pass http://127.0.0.1:5000;
   }
 }
+
 # ============= AWX =============
 server {
   listen 443 ssl http2;
@@ -514,7 +558,7 @@ install_awx_operator() {
   kubectl apply -k "https://github.com/ansible/awx-operator/config/default?ref=${AWX_OPERATOR_VERSION}" -n "$AWX_NAMESPACE"
 }
 
-# NEW: wait until the AWX CRD exists to avoid the race you hit
+# wait until the AWX CRD exists to avoid race
 wait_for_awx_crd() {
   export KUBECONFIG="$K3S_KUBECONFIG"
   log "Waiting for AWX CRDs to register..."
@@ -555,7 +599,7 @@ patch_coredns_hosts() {
   export KUBECONFIG="$K3S_KUBECONFIG"
 
   local A_HOST="$GITLAB_HOST" B_HOST="$AWX_HOST" C_HOST="$PMA_HOST" D_HOST="$REGISTRY_HOST"
-  if [[ "$A_HOST" == "gitlab.example.lan" || "$B_HOST" == "awx.example.lan" || "$C_HOST" == "pma.example.lan" ]]; then
+  if [[ "$A_HOST" == "gitlab.example.lan" || "$B_HOST" == "awx.example.lan" || "$C_HOST" == "pma.example.lan" || "$D_HOST" == "registry.example.lan" ]]; then
     log "Skipping CoreDNS patch: hostnames still set to example.lan. Pass --domain/--*-host to set real names."
     return 0
   fi
@@ -607,7 +651,6 @@ if dobj["data"].get("NodeHosts","") != new:
 PY
 }
 
-
 awx_admin_password() {
   export KUBECONFIG="$K3S_KUBECONFIG"
   kubectl get secret ${AWX_NAME}-admin-password -n "$AWX_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true
@@ -629,6 +672,7 @@ print_summary() {
   echo "GitLab:           https://$GITLAB_HOST  (SSH: $GITLAB_SSH_PORT)"
   echo "AWX:              https://$AWX_HOST"
   echo "phpMyAdmin:       https://$PMA_HOST"
+  echo "Local Registry:   https://$REGISTRY_HOST (user: $REGISTRY_USER)"
   echo
   echo "MySQL DSN example for Ansible/Python:"
   echo "  mysql+pymysql://${APP_DB_USER}:${APP_DB_PASS}@${SERVER_IP}:${MYSQL_PORT}/${APP_DB_NAME}"
@@ -643,7 +687,6 @@ print_summary() {
   echo "- AWX pods can resolve ${GITLAB_HOST} and reach it via Nginx on this node (CoreDNS patched)."
   echo "- AWX/Ansible can reach MySQL at ${SERVER_IP}:${MYSQL_PORT}."
   echo "- phpMyAdmin manages the same MySQL database; credentials above."
-  echo "Local Registry:   https://$REGISTRY_HOST (user: $REGISTRY_USER)"
   echo "===================================================="
 }
 
@@ -670,7 +713,8 @@ if $DO_CERTS; then
   make_certs
 fi
 
-if $DO_MYSQL || $DO_PMA || $DO_GITLAB; then
+# Compose services are written only for the requested components
+if $DO_MYSQL || $DO_PMA || $DO_GITLAB || $DO_REGISTRY; then
   write_compose
   compose_up
   install_compose_autostart
@@ -707,9 +751,7 @@ if $DO_REGISTRY; then
   install_mkcert
   make_certs
   setup_registry_auth
-  # Ensure compose file contains registry service
-  write_compose
-  compose_up
+  # Ensure compose contains registry service (already handled by write_compose)
   write_nginx
   ensure_registry_trust_for_k3s
   if $DO_DNS_PATCH || $DO_K3S || $DO_AWX; then
