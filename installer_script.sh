@@ -295,9 +295,6 @@ cat >> "$COMPOSE_FILE" <<YAML
     environment:
       REGISTRY_HTTP_ADDR: "0.0.0.0:5000"
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
-      REGISTRY_AUTH: "htpasswd"
-      REGISTRY_AUTH_HTPASSWD_REALM: "Registry"
-      REGISTRY_AUTH_HTPASSWD_PATH: "/auth/htpasswd"
     ports:
       - "127.0.0.1:5000:5000"
     volumes:
