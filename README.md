@@ -203,10 +203,10 @@ now run following commands after providing your domain name
 ```bash
 REGISTRY_HOST=registry.<DOMAIN>
 sudo cd /opt/stack/ee/awx-ee
-sudo ansible-builder build -t ${REGISTRY_HOST}/awx-ee:latest -f execution-environment.yml --container-runtime docker
+sudo ansible-builder build -t ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt -f execution-environment.yml --container-runtime docker
 
 echo "${REGISTRY_PASS}" | sudo docker login "https://${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
-sudo docker push ${REGISTRY_HOST}/awx-ee:latest
+sudo docker push ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt
 ```
 sanity check
 ```bash
@@ -215,22 +215,23 @@ curl -s --user "${REGISTRY_USER}:${REGISTRY_PASS}" https://${REGISTRY_HOST}/v2/_
 -> should list {"repositories":["awx-ee"]} 
 
 # execution env-check: verify end-to-end
-kubectl -n awx run reg-check --image=${REGISTRY_HOST}/awx-ee:latest --restart=Never --command -- sleep 1
+kubectl -n awx run reg-check --image=${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt --restart=Never --command -- sleep 1
 kubectl -n awx logs reg-check || true
 kubectl -n awx delete pod reg-check
 
 # Use it in AWX without a registry (same Docker host)
-In the AWX UI:
-Credentials → Add → “Container Registry”
-Registry URL: https://${REGISTRY_HOST}
-Username/Password: ${REGISTRY_USER} / ${REGISTRY_PASS}
-Administration → Execution Environments → Add
-Name: “Local EE”
-Image: ${REGISTRY_HOST}/awx-ee:latest
-Pull: Always (at least initially)
-Credential: the Container Registry credential from step 1
-Use this EE on your Job Template (or set as default).
-AWX will auto-create a Kubernetes imagePullSecret from the Container Registry credential and attach it to the job pod. With our CoreDNS patch and k3s trust in place, the pull succeeds fully locally.
+In the AWX UI:<br>
+Credentials → Add → “Container Registry”<br>
+Registry URL: https://${REGISTRY_HOST}<br>
+Username/Password: ${REGISTRY_USER} / ${REGISTRY_PASS}<br>
+Administration → Execution Environments → Add<br>
+Name: “Local EE”<br>
+Image: ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt<br>
+Pull: Always (at least initially)<br>
+Credential: the Container Registry credential from step 1<br>
+Use this EE on your Job Template (or set as default).<br>
+AWX will auto-create a Kubernetes imagePullSecret from the Container Registry credential and <br>
+attach it to the job pod. With our CoreDNS patch and k3s trust in place, the pull succeeds fully locally.
 
 <img width="1641" height="776" alt="image" src="https://github.com/user-attachments/assets/e8b9222b-57d3-4050-a117-199428d729f0" />
 
