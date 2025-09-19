@@ -217,7 +217,16 @@ do not move this apt-get install and pip install to earlier stage! <br>
 sudo apt-get install python3-pip -y
 sudo pip install ansible-builder
 
-sudo ansible-builder build -t awx-ee:cp-gaia-mgmt -f execution-environment.yml
+#old - sudo ansible-builder build -t awx-ee:cp-gaia-mgmt -f execution-environment.yml
+docker run -d --restart=always --name registry -p 5000:5000 registry:2
+docker tag awx-ee:latest <SERVER_IP>:5000/awx-ee:cp-gaia-mgmt
+docker push <SERVER_IP>:5000/awx-ee:cp-gaia-mgmt
+
+A) In the AWX UI (recommended)
+Create a Credential → Container Registry with the registry URL + username/token.
+Edit Execution Environments → your EE and set the Pull credential to that registry credential.
+Put the image name (e.g., docker.io/user/awx-ee:cp-gaia-mgmt) in the EE record.
+
 sudo docker save awx-ee:cp-gaia-mgmt -o /tmp/ee.tar
 sudo k3s ctr images import /tmp/ee.tar
 
