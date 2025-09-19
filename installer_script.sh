@@ -418,14 +418,26 @@ server {
   ssl_certificate_key ${CERT_KEY};
 
   # Docker registry likes streaming uploads
-  client_max_body_size 1g;
-  proxy_request_buffering off;
-
+  client_max_body_size 0;
+  chunked_transfer_encoding on;
+  add_header Docker-Distribution-Api-Version "registry/2.0" always;
+  
   location /v2/ {
-    proxy_set_header Host              \$host;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host              \$http_host;
+    proxy_set_header Authorization     \$http_authorization;
+    proxy_set_header X-Real-IP         \$remote_addr;
     proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Proto $scheme;
     proxy_pass http://127.0.0.1:5000;
+    
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_read_timeout 900;
+    proxy_send_timeout 900;
+    auth_basic "Registry";
+    auth_basic_user_file /opt/stack/registry/htpasswd;
   }
 }
 
