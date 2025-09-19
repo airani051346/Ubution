@@ -206,7 +206,7 @@ sudo cd /opt/stack/ee/awx-ee
 sudo ansible-builder build -t ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt -f execution-environment.yml --container-runtime docker
 
 sudo mkdir -p /etc/docker/certs.d/registry.fritz.lan
-sudo cp "$(mkcert -CAROOT)/rootCA.pem" /etc/docker/certs.d/registry.fritz.lan/ca.crt
+sudo cp "$(sudo mkcert -CAROOT)/rootCA.pem" /etc/docker/certs.d/registry.fritz.lan/ca.crt
 sudo systemctl restart docker
 
 echo "${REGISTRY_PASS}" | sudo docker login "https://${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
