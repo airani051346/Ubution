@@ -234,6 +234,50 @@ setup_registry_auth() {
   fi
 }
 
+# Ensure Docker client trusts the mkcert CA for our registry host
+ensure_docker_client_trust_for_registry() {
+  local caroot
+  caroot="$(mkcert -CAROOT)"
+  install -d -m 0755 "/etc/docker/certs.d/${REGISTRY_HOST}"
+  install -m 0644 "${caroot}/rootCA.pem" "/etc/docker/certs.d/${REGISTRY_HOST}/ca.crt"
+  systemctl restart docker || true
+}
+
+# Enable htpasswd auth inside the registry container via a compose override
+enable_registry_auth_in_compose() {
+  mkdir -p "$COMPOSE_DIR"
+  # Make sure htpasswd exists (re-use your existing helper’s outputs)
+  [[ -s "${REGISTRY_AUTH_FILE}" ]] || {
+    log "Creating registry htpasswd for ${REGISTRY_USER}"
+    docker run --rm --entrypoint htpasswd httpd:2 -Bbn "${REGISTRY_USER}" "${REGISTRY_PASS}" > "${REGISTRY_AUTH_FILE}"
+    chmod 640 "${REGISTRY_AUTH_FILE}"
+  }
+
+  cat > "${COMPOSE_DIR}/docker-compose.override.yml" <<EOF
+services:
+  registry:
+    environment:
+      REGISTRY_AUTH: "htpasswd"
+      REGISTRY_AUTH_HTPASSWD_REALM: "Registry"
+      REGISTRY_AUTH_HTPASSWD_PATH: "/auth/htpasswd"
+    volumes:
+      - ${REGISTRY_AUTH_FILE}:/auth/htpasswd:ro
+EOF
+
+  (cd "${COMPOSE_DIR}" && docker compose up -d registry)
+}
+
+# Quick smoke tests (does not fail the run)
+smoke_test_registry() {
+  set +e
+  echo
+  log "Quick registry checks:"
+  curl -sI "http://127.0.0.1:5000/v2/" | head -n1
+  curl -skI "https://${REGISTRY_HOST}/v2/" | head -n1
+  printf '%s' "${REGISTRY_PASS}" | docker login "${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
+  set -e
+}
+
 make_certs() {
   mkdir -p "$CERT_DIR"
   local need=0
@@ -429,7 +473,7 @@ server {
     proxy_set_header Authorization     \$http_authorization;
     proxy_set_header X-Real-IP         \$remote_addr;
     proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Proto \$scheme;
     proxy_pass http://127.0.0.1:5000;
     
     proxy_request_buffering off;
@@ -763,6 +807,9 @@ if $DO_REGISTRY; then
   # Ensure compose contains registry service (already handled by write_compose)
   write_nginx
   ensure_registry_trust_for_k3s
+  ensure_docker_client_trust_for_registry
+  enable_registry_auth_in_compose
+  smoke_test_registry
   if $DO_DNS_PATCH || $DO_K3S || $DO_AWX; then
     kube_ready || true
     patch_coredns_hosts || true
