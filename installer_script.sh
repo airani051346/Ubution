@@ -19,7 +19,7 @@ set -euo pipefail
 # ==============================================
 
 # ----------------- Defaults -----------------
-: "${DOMAIN:=example.lan}"
+: "${DOMAIN:=fritz.lan}"
 : "${GITLAB_HOST:=gitlab.${DOMAIN}}"
 : "${AWX_HOST:=awx.${DOMAIN}}"
 : "${PMA_HOST:=pma.${DOMAIN}}"
