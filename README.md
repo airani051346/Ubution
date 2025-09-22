@@ -130,14 +130,17 @@ cd /opt/stack/ee/awx-ee
 put following content into execution-environment.yml
 
 ```YAML
-
 ---
 version: 3
 images:
   base_image:
-    name: quay.io/ansible/awx-ee:latest   # pin to digest once tested
+    name: quay.io/ansible/awx-ee:latest
 
 dependencies:
+  ansible_core:
+    package_pip: ansible-core
+  ansible_runner:
+    package_pip: ansible-runner
   python:
     - setuptools
     - psycopg2-binary
@@ -183,18 +186,14 @@ additional_build_steps:
   append_builder:
     - COPY bindep.txt /output/bindep.txt
 ```
-# create /opt/stack/ee/awx-ee/bindep.txt
-content
-```bash
-kernel-headers [!platform:el]
-```
-
 
 now run following commands after providing your domain name
 
 ```bash
 REGISTRY_HOST=registry.<DOMAIN>
 sudo cd /opt/stack/ee/awx-ee
+sudo rm -rf context
+echo 'kernel-headers [!platform:el]' > context/bindep.txt
 sudo ansible-builder build -t ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt -f execution-environment.yml --container-runtime docker -v 3
 
 sudo mkdir -p /etc/docker/certs.d/registry.fritz.lan
