@@ -199,6 +199,12 @@ sudo ansible-builder build -t ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt -f execution-
 sudo mkdir -p /etc/docker/certs.d/registry.fritz.lan
 sudo cp "$(sudo mkcert -CAROOT)/rootCA.pem" /etc/docker/certs.d/registry.fritz.lan/ca.crt
 sudo systemctl restart docker
+
+sudo docker push registry.<DOMAIN>/awx-ee:cp-gaia-mgmt
+
+sanity check:
+curl -k https://registry.<DOMAIN>/v2/_catalog
+or just: curl -k http://127.0.0.1:5000/v2/_catalog
 ```
 
 # in our deployment because all is on the same host we are using primary IP
@@ -271,7 +277,6 @@ Remove $CERT_PEM and $CERT_KEY, then re-run --certs to include ${REGISTRY_HOST}.
 # registry login check with default password
 ```bash
 printf 'ChangeMeReg123' | docker login http://127.0.0.1:5000 -u awx --password-stdin
-sudo docker push registry.<DOMAIN>/awx-ee:cp-gaia-mgmt
 ```
 
 # ip address of mysql docker compose 
