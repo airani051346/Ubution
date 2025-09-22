@@ -198,20 +198,16 @@ sudo ansible-builder build -t ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt -f execution-
 sudo mkdir -p /etc/docker/certs.d/registry.fritz.lan
 sudo cp "$(sudo mkcert -CAROOT)/rootCA.pem" /etc/docker/certs.d/registry.fritz.lan/ca.crt
 sudo systemctl restart docker
-```
 
-# pick the primary IP of this node
+# in our deployment because all is on the same host we are using primary IP
+# and adding it to the /etc/hosts file
 ```bash
 IP=$(ip -4 route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if ($i=="src"){print $(i+1); exit}}')
-
-# add your app FQDNs (idempotent-ish)
 sudo bash -lc 'IP='"$IP"'; for h in registry.fritz.lan gitlab.fritz.lan awx.fritz.lan pma.fritz.lan; do
   grep -qE "^[[:space:]]*$IP[[:space:]]+$h([[:space:]]|\$)" /etc/hosts || echo "$IP $h" >> /etc/hosts
 done'
-
-printf 'ChangeMeReg123' | docker login http://127.0.0.1:5000 -u awx --password-stdin
-sudo docker push registry.<DOMAIN>/awx-ee:cp-gaia-mgmt
 ```
+
 sanity check
 ```bash
 curl -s --user "${REGISTRY_USER}:${REGISTRY_PASS}" https://${REGISTRY_HOST}/v2/_catalog
@@ -270,6 +266,12 @@ Manually docker login https://${REGISTRY_HOST} on the host to verify creds.<br>
 Already-generated cert without registry hostname:<br>
 Remove $CERT_PEM and $CERT_KEY, then re-run --certs to include ${REGISTRY_HOST}.<br>
 
+# registry login check with default password
+```bash
+printf 'ChangeMeReg123' | docker login http://127.0.0.1:5000 -u awx --password-stdin
+sudo docker push registry.<DOMAIN>/awx-ee:cp-gaia-mgmt
+```
+
 # ip address of mysql docker compose 
 ```bash
 sudo docker ps
@@ -277,4 +279,3 @@ sudo docker inspect -f '{{.Name}} -> {{range .NetworkSettings.Networks}}{{.IPAdd
 ```
 <img width="1757" height="236" alt="image" src="https://github.com/user-attachments/assets/f4e7d14d-d283-4565-b03e-56359706c102" />
 
-You should see check_point.mgmt and check_point.gaia in the output.
