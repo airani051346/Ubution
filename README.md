@@ -44,7 +44,7 @@ FLUSH PRIVILEGES;
 # how to access AWX:<br>
   URL:  https://awx.<-mydomain.com->
   User: admin
-  Pass: (what you set) or fetch with:
+  Pass: (what you set in script. default is: ChangeMeAwx123) or fetch with:
   
 ```bash
 sudo kubectl -n awx get secret awx-admin-password -o jsonpath='{.data.password}' | base64 --decode; echo
