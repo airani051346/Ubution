@@ -385,6 +385,19 @@ YAML
 compose_up(){ (cd "$COMPOSE_DIR" && docker compose up -d); }
 
 mysql_bootstrap_db_user(){
+  log "Waiting for MySQL (container health=healthy)"
+  local cid
+  cid=$(docker ps --filter 'name=compose-mysql-1' --format '{{.ID}}' | head -n1 || true)
+  if [[ -z "$cid" ]]; then err "MySQL container not found"; return 1; fi
+  for i in {1..240}; do  # up to ~8 minutes for first init
+    state=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || true)
+    [[ "$state" == "healthy" ]] && return 0
+    sleep 2
+  done
+  err "MySQL did not become healthy in time"; return 1
+}
+
+old_mysql_bootstrap_db_user(){
   log "Waiting for MySQL to report healthy"
   for i in {1..60}; do
     if docker exec "$(docker ps --filter 'name=compose-mysql-1' --format '{{.ID}}')" \
