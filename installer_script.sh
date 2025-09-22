@@ -281,6 +281,28 @@ ensure_hosts_entries(){
   fi
 }
 
+mysql_volume_maybe_reset_first_boot(){
+  # Only act if the named volume already exists *and* looks half-initialized.
+  local vol="compose_mysql_data"
+  local mnt
+  mnt="$(docker volume inspect "$vol" --format '{{.Mountpoint}}' 2>/dev/null || true)"
+  [[ -z "$mnt" ]] && return 0  # volume doesn't exist yet, nothing to do
+
+  # Count files and key markers inside the volume
+  local count ibdata sysdir
+  count=$(find "$mnt" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')
+  [[ -f "$mnt/ibdata1" ]] && ibdata=1 || ibdata=0
+  [[ -d "$mnt/mysql" ]] && sysdir=1 || sysdir=0
+
+  # If there are a few files but NOT both ibdata1 and mysql system dir,
+  # it's almost certainly a broken init. Auto-reset once.
+  if [[ "$count" -gt 0 && ( "$ibdata" -eq 0 || "$sysdir" -eq 0 ) ]]; then
+    log "MySQL volume appears half-initialized ($vol). Auto-resetting it once."
+    (cd "$COMPOSE_DIR" && docker compose down) || true
+    docker volume rm "$vol" || true
+  fi
+}
+
 write_compose(){
   DOLLAR='$'
   mkdir -p "$COMPOSE_DIR"
@@ -702,12 +724,27 @@ fi
 
 # Compose services
 if $DO_MYSQL || $DO_PMA || $DO_GITLAB || $DO_REGISTRY; then
-  setup_registry_auth             # ensure htpasswd exists before Nginx references it
+  setup_registry_auth
   if $DO_MYSQL_RESET; then
     mysql_reset_volume
+  else
+    # Only for first installs: clean up a half-initialized MySQL volume
+    $DO_MYSQL && mysql_volume_maybe_reset_first_boot
   fi
   write_compose
   compose_up
+fi
+
+if $DO_MYSQL; then
+  # Watch logs briefly for "Cannot create redo log files" and auto-reset once
+  cid=$(docker ps --filter 'name=compose-mysql-1' -q || true)
+  if [[ -n "$cid" ]] && docker logs "$cid" --since=30s 2>&1 \
+      | grep -q 'Cannot create redo log files'; then
+    log "Detected MySQL redo-log init failure right after start; auto-resetting volume."
+    (cd "$COMPOSE_DIR" && docker compose down) || true
+    docker volume rm compose_mysql_data || true
+    compose_up
+  fi
 fi
 
 # Nginx (after compose so backends exist)
