@@ -60,7 +60,7 @@ PMA_BIND_PORT=9001
 
 # MySQL
 MYSQL_PORT=3306
-MYSQL_ROOT_PASSWORD="ChangeMe!Strong123"
+MYSQL_ROOT_PASSWORD="ChangeMeStrong123"
 APP_DB_NAME=appdb
 APP_DB_USER=awx_app
 APP_DB_PASS="AppDbStrong!123"
@@ -72,11 +72,11 @@ REGISTRY_DATA_DIR="$REGISTRY_DIR/data"
 REGISTRY_REALM="Registry"
 
 : "${REGISTRY_USER:=awx}"
-: "${REGISTRY_PASS:=ChangeMe!Reg123}"
+: "${REGISTRY_PASS:=ChangeMeReg123}"
 
 # AWX admin (preset so you don't have to read the random secret)
 : "${AWX_ADMIN_USER:=admin}"
-: "${AWX_ADMIN_PASS:=ChangeMe!Awx123}"
+: "${AWX_ADMIN_PASS:=ChangeMeAwx123}"
 
 # Flags
 DO_REGISTRY=false
