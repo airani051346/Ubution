@@ -29,6 +29,8 @@ set -euo pipefail
 STACK_DIR=/opt/stack
 COMPOSE_DIR="$STACK_DIR/compose"
 COMPOSE_FILE="$COMPOSE_DIR/docker-compose.yml"
+# Ensure docker compose always uses the same project name (usually 'compose')
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$COMPOSE_DIR")}"
 
 # Certificates for Nginx (SAN cert for all hosts)
 CERT_DIR=/etc/nginx/certs
@@ -244,9 +246,9 @@ ensure_docker_client_trust_for_registry() {
 }
 
 # Enable htpasswd auth inside the registry container via a compose override
+# (Only writes the override; first compose_up will use it automatically)
 enable_registry_auth_in_compose() {
   mkdir -p "$COMPOSE_DIR"
-  # Make sure htpasswd exists (re-use your existing helper’s outputs)
   [[ -s "${REGISTRY_AUTH_FILE}" ]] || {
     log "Creating registry htpasswd for ${REGISTRY_USER}"
     docker run --rm --entrypoint htpasswd httpd:2 -Bbn "${REGISTRY_USER}" "${REGISTRY_PASS}" > "${REGISTRY_AUTH_FILE}"
@@ -263,8 +265,19 @@ services:
     volumes:
       - ${REGISTRY_AUTH_FILE}:/auth/htpasswd:ro
 EOF
+}
 
-  (cd "${COMPOSE_DIR}" && docker compose up -d registry)
+# Remove a previously created container with a mismatched compose project label
+cleanup_stray_registry_container() {
+  local cname="${COMPOSE_PROJECT_NAME}-registry-1"
+  if docker inspect "$cname" >/dev/null 2>&1; then
+    local proj
+    proj="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$cname" 2>/dev/null || true)"
+    if [[ "$proj" != "$COMPOSE_PROJECT_NAME" ]]; then
+      log "Removing stray $cname (compose project '$proj' != '$COMPOSE_PROJECT_NAME')"
+      docker rm -f "$cname" || true
+    fi
+  fi
 }
 
 # Quick smoke tests (does not fail the run)
@@ -330,7 +343,7 @@ cat >> "$COMPOSE_FILE" <<YAML
 YAML
   fi
 
-  # Local Registry
+  # Local Registry (base: no auth; auth is injected via override)
   if $DO_REGISTRY; then
 cat >> "$COMPOSE_FILE" <<YAML
   registry:
@@ -343,7 +356,6 @@ cat >> "$COMPOSE_FILE" <<YAML
       - "127.0.0.1:5000:5000"
     volumes:
       - ${REGISTRY_DATA_DIR}:/var/lib/registry
-      - ${REGISTRY_AUTH_FILE}:/auth/htpasswd:ro
     networks: [back]
 YAML
   fi
@@ -415,7 +427,7 @@ compose_up() {
 mysql_bootstrap_db_user() {
   log "Waiting for MySQL to report healthy"
   for i in {1..60}; do
-    if docker exec compose-mysql-1 mysqladmin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent >/dev/null 2>&1; then
+    if docker exec "${COMPOSE_PROJECT_NAME}-mysql-1" mysqladmin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent >/dev/null 2>&1; then
       return 0
     fi
     sleep 2
@@ -465,7 +477,7 @@ server {
   client_max_body_size 0;
   chunked_transfer_encoding on;
   add_header Docker-Distribution-Api-Version "registry/2.0" always;
-  
+
   location /v2/ {
     proxy_http_version 1.1;
     proxy_set_header Connection "";
@@ -475,7 +487,7 @@ server {
     proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
     proxy_pass http://127.0.0.1:5000;
-    
+
     proxy_request_buffering off;
     proxy_buffering off;
     proxy_read_timeout 900;
@@ -768,6 +780,13 @@ fi
 
 # Compose services are written only for the requested components
 if $DO_MYSQL || $DO_PMA || $DO_GITLAB || $DO_REGISTRY; then
+  # If we’re doing the registry, ensure htpasswd & override exist BEFORE first up
+  if $DO_REGISTRY; then
+    install_mkcert
+    setup_registry_auth
+    enable_registry_auth_in_compose
+  fi
+  cleanup_stray_registry_container
   write_compose
   compose_up
   install_compose_autostart
@@ -801,14 +820,11 @@ if $DO_NGINX; then
 fi
 
 if $DO_REGISTRY; then
-  install_mkcert
+  # certs/nginx/trust and tests (compose already up with override)
   make_certs
-  setup_registry_auth
-  # Ensure compose contains registry service (already handled by write_compose)
   write_nginx
   ensure_registry_trust_for_k3s
   ensure_docker_client_trust_for_registry
-  enable_registry_auth_in_compose
   smoke_test_registry
   if $DO_DNS_PATCH || $DO_K3S || $DO_AWX; then
     kube_ready || true
