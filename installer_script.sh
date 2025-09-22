@@ -635,6 +635,39 @@ patch_coredns_hosts(){
   export KUBECONFIG="$K3S_KUBECONFIG"
   local LINE="${SERVER_IP} ${GITLAB_HOST} ${AWX_HOST} ${PMA_HOST} ${REGISTRY_HOST}"
 
+  # Wait for CoreDNS ConfigMap
+  for i in {1..120}; do
+    kubectl -n kube-system get cm coredns >/dev/null 2>&1 && break || sleep 2
+  done || { err "CoreDNS configmap not found"; return 1; }
+
+  # Ensure hosts plugin exists once (merge Corefile if missing)
+  if ! kubectl -n kube-system get cm coredns -o jsonpath='{.data.Corefile}' | grep -q 'hosts /etc/coredns/NodeHosts'; then
+    kubectl -n kube-system patch cm coredns --type merge --patch \
+      '{"data":{"Corefile":".:53 {\n    errors\n    health\n    ready\n    kubernetes cluster.local in-addr.arpa ip6.arpa {\n      pods insecure\n      fallthrough in-addr.arpa ip6.arpa\n    }\n    hosts /etc/coredns/NodeHosts {\n      ttl 60\n      reload 15s\n      fallthrough\n    }\n    prometheus :9153\n    forward . /etc/resolv.conf\n    cache 30\n    loop\n    reload\n    loadbalance\n    import /etc/coredns/custom/*.override\n}\nimport /etc/coredns/custom/*.server\n"}}'
+  fi
+
+  # Merge NodeHosts content, JSON-escape via jq -Rs, retry on conflict
+  for i in {1..10}; do
+    cur="$(kubectl -n kube-system get cm coredns -o jsonpath='{.data.NodeHosts}' 2>/dev/null || true)"
+    # append, trim duplicate spaces, unique lines, ensure trailing newline
+    new="$(printf "%s\n%s\n" "$cur" "$LINE" | awk '{$1=$1} NF' | awk '!seen[$0]++')"$'\n'
+    json_str="$(printf "%s" "$new" | jq -Rs .)"  # proper JSON string
+
+    if kubectl -n kube-system patch cm coredns --type merge --patch "{\"data\":{\"NodeHosts\":${json_str}}}"; then
+      kubectl -n kube-system rollout restart deploy/coredns
+      return 0
+    fi
+    sleep 1
+  done
+
+  err "Failed to patch CoreDNS NodeHosts after retries"
+}
+
+old_patch_coredns_hosts(){
+  $DO_PATCH_DNS || return 0
+  export KUBECONFIG="$K3S_KUBECONFIG"
+  local LINE="${SERVER_IP} ${GITLAB_HOST} ${AWX_HOST} ${PMA_HOST} ${REGISTRY_HOST}"
+
   # Wait for CM
   for i in {1..120}; do
     kubectl -n kube-system get cm coredns >/dev/null 2>&1 && break || sleep 2
