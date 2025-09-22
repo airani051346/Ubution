@@ -12,6 +12,10 @@ start a new shell and wait for
 ```bash
 watch -d sudo kubectl -n awx get pods
 ```
+# dns-record patching
+```bash
+curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/installer_script.sh | sudo bash -s -- --dns-patch --domain <mydomain.com>
+```
 
 # how to access GitLab::<br>
   URL:  https://gitlab.<mydomain.com>
