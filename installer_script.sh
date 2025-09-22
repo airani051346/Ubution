@@ -414,6 +414,19 @@ YAML
 
 compose_up(){ (cd "$COMPOSE_DIR" && docker compose up -d); }
 
+mysql_reset_on_init_error(){
+  local cid
+  cid=$(docker ps --filter 'name=compose-mysql-1' -q || true)
+  [[ -z "$cid" ]] && return 0
+  if docker logs "$cid" --since=10m 2>&1 | grep -qE \
+     'data directory has files in it|designated data directory .* is unusable|Cannot create redo log files'; then
+    log "Detected MySQL init failure (bad data dir). Resetting volume once."
+    (cd "$COMPOSE_DIR" && docker compose down) || true
+    docker volume rm compose_mysql_data || true
+    compose_up
+  fi
+}
+
 mysql_bootstrap_db_user(){
   log "Waiting for MySQL (container health=healthy)"
   local cid
@@ -728,11 +741,11 @@ if $DO_MYSQL || $DO_PMA || $DO_GITLAB || $DO_REGISTRY; then
   if $DO_MYSQL_RESET; then
     mysql_reset_volume
   else
-    # Only for first installs: clean up a half-initialized MySQL volume
     $DO_MYSQL && mysql_volume_maybe_reset_first_boot
   fi
   write_compose
   compose_up
+  $DO_MYSQL && mysql_reset_on_init_error
 fi
 
 if $DO_MYSQL; then
