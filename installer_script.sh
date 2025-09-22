@@ -447,9 +447,6 @@ server {
     proxy_buffering off;
     proxy_read_timeout 900;
     proxy_send_timeout 900;
-
-    auth_basic "${REGISTRY_REALM}";
-    auth_basic_user_file ${REGISTRY_AUTH_FILE};
   }
 }
 
@@ -568,6 +565,35 @@ ensure_k8s_registry_secret(){
 
 deploy_awx(){
   export KUBECONFIG="$K3S_KUBECONFIG"
+
+  # Ensure admin password secret exists (idempotent)
+  kubectl -n "$AWX_NAMESPACE" create secret generic ${AWX_NAME}-admin-password \
+    --from-literal=password="${AWX_ADMIN_PASS}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+  cat <<YAML | kubectl apply -n "$AWX_NAMESPACE" -f -
+apiVersion: awx.ansible.com/v1beta1
+kind: AWX
+metadata:
+  name: ${AWX_NAME}
+spec:
+  service_type: NodePort
+  nodeport_port: ${AWX_NODEPORT}
+  ingress_type: none
+  admin_user: ${AWX_ADMIN_USER}
+  admin_password_secret: ${AWX_NAME}-admin-password
+  host_aliases:
+    - ip: ${SERVER_IP}
+      hostnames:
+        - ${GITLAB_HOST}
+        - ${AWX_HOST}
+        - ${PMA_HOST}
+        - ${REGISTRY_HOST}
+YAML
+}
+
+old_deploy_awx(){
+  export KUBECONFIG="$K3S_KUBECONFIG"
   cat <<YAML | kubectl apply -n "$AWX_NAMESPACE" -f -
 apiVersion: awx.ansible.com/v1beta1
 kind: AWX
@@ -592,6 +618,35 @@ YAML
 }
 
 patch_coredns_hosts(){
+  $DO_PATCH_DNS || return 0
+  export KUBECONFIG="$K3S_KUBECONFIG"
+  local LINE="${SERVER_IP} ${GITLAB_HOST} ${AWX_HOST} ${PMA_HOST} ${REGISTRY_HOST}"
+
+  # Wait for CM
+  for i in {1..120}; do
+    kubectl -n kube-system get cm coredns >/dev/null 2>&1 && break || sleep 2
+  done || { err "CoreDNS configmap not found"; return 1; }
+
+  # Ensure hosts plugin exists (once)
+  if ! kubectl -n kube-system get cm coredns -o jsonpath='{.data.Corefile}' | grep -q 'hosts /etc/coredns/NodeHosts'; then
+    kubectl -n kube-system patch cm coredns --type merge --patch \
+      '{"data":{"Corefile":".:53 {\n    errors\n    health\n    ready\n    kubernetes cluster.local in-addr.arpa ip6.arpa {\n      pods insecure\n      fallthrough in-addr.arpa ip6.arpa\n    }\n    hosts /etc/coredns/NodeHosts {\n      ttl 60\n      reload 15s\n      fallthrough\n    }\n    prometheus :9153\n    forward . /etc/resolv.conf\n    cache 30\n    loop\n    reload\n    loadbalance\n    import /etc/coredns/custom/*.override\n}\nimport /etc/coredns/custom/*.server\n"}}'
+  fi
+
+  # Merge NodeHosts with retry
+  for i in {1..10}; do
+    cur=$(kubectl -n kube-system get cm coredns -o jsonpath='{.data.NodeHosts}')
+    new=$(printf "%s\n%s\n" "$cur" "$LINE" | awk '{$1=$1} NF' | awk '!seen[$0]++' OFS=' ')$'\n'
+    if kubectl -n kube-system patch cm coredns --type merge --patch "$(printf '{"data":{"NodeHosts":%q}}' "$new")"; then
+      kubectl -n kube-system rollout restart deploy/coredns
+      return 0
+    fi
+    sleep 1
+  done
+  err "Failed to patch CoreDNS NodeHosts after retries"
+}
+
+old_patch_coredns_hosts(){
   $DO_PATCH_DNS || return 0
   export KUBECONFIG="$K3S_KUBECONFIG"
   local A="$GITLAB_HOST" B="$AWX_HOST" C="$PMA_HOST" D="$REGISTRY_HOST"
