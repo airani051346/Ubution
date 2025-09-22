@@ -26,7 +26,7 @@ sudo docker exec -t compose-gitlab-1 bash -lc "cat /etc/gitlab/initial_root_pass
   username root <br>
   default fassword is ChangeMeStrong123 if not defined with --mysql-root-pass
   
-# Import Database and Sampple Data
+# Import Database and Sample Data
   create a database named netvars and import netvars.sql into mysql DB. You can find this file in SQL-DB folder <br>
   additional priviligaes for the ansible user <br>
 
@@ -131,13 +131,9 @@ put following content into execution-environment.yml
 version: 3
 images:
   base_image:
-    name: quay.io/ansible/awx-ee:latest
+    name: quay.io/ansible/awx-ee:latest   # tip: pin to a digest once it works
 
 dependencies:
-  ansible_core:
-    package_pip: ansible-core
-  ansible_runner:
-    package_pip: ansible-runner
   python:
     - setuptools
     - psycopg2-binary
@@ -166,41 +162,21 @@ dependencies:
       - name: check_point.mgmt
       - name: check_point.gaia
       - name: ansible.netcommon
-  system:
-    - git
-    - sshpass
-    - docker
-    - subversion
-    - gcc
-    - make
-    - python3-devel
-    - openssl-devel
-    - libffi-devel
-    - libxml2-devel
-    - libxslt-devel
-
-additional_build_steps:
-  prepend_builder:
-    - RUN /usr/bin/python3 -m pip install --upgrade pip setuptools wheel
-    - RUN pip config set global.index-url https://pypi.org/simple
-    - RUN pip config set global.timeout 600
-    - RUN pip config set global.retries 5
-    - ENV PIP_DEFAULT_TIMEOUT=600
-    - ENV PIP_NO_CACHE_DIR=1
 ```
 now run following commands after providing your domain name
 
 ```bash
 REGISTRY_HOST=registry.<DOMAIN>
 sudo cd /opt/stack/ee/awx-ee
-sudo ansible-builder build -t ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt -f execution-environment.yml --container-runtime docker
+sudo ansible-builder build -t ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt -f execution-environment.yml --container-runtime docker -v 3
 
 sudo mkdir -p /etc/docker/certs.d/registry.fritz.lan
 sudo cp "$(sudo mkcert -CAROOT)/rootCA.pem" /etc/docker/certs.d/registry.fritz.lan/ca.crt
 sudo systemctl restart docker
+```
 
 # in our deployment because all is on the same host we are using primary IP
-# and adding it to the /etc/hosts file
+## and adding it to the /etc/hosts file
 ```bash
 IP=$(ip -4 route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if ($i=="src"){print $(i+1); exit}}')
 sudo bash -lc 'IP='"$IP"'; for h in registry.fritz.lan gitlab.fritz.lan awx.fritz.lan pma.fritz.lan; do
