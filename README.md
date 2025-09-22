@@ -121,7 +121,7 @@ o	Save the template.
 sudo apt-get install python3-pip -y
 sudo pip install ansible-builder
 
-sudo mkdir /opt/stack/ee/awx-ee
+sudo mkdir -p /opt/stack/ee/awx-ee
 cd /opt/stack/ee/awx-ee
 ```
 put following content into execution-environment.yml
