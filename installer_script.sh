@@ -274,6 +274,7 @@ ensure_hosts_entries(){
 }
 
 write_compose(){
+  DOLLAR='$'
   mkdir -p "$COMPOSE_DIR"
   : > "$COMPOSE_FILE"
   echo "services:" >> "$COMPOSE_FILE"
@@ -292,7 +293,7 @@ write_compose(){
     ports:
       - "0.0.0.0:${MYSQL_PORT}:3306"
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -uroot -p\\\$\${MYSQL_ROOT_PASSWORD} --silent"]
+      test: ["CMD-SHELL", "mysqladmin ping -uroot -p${DOLLAR}${DOLLAR}{MYSQL_ROOT_PASSWORD} --silent"]
       interval: 5s
       timeout: 3s
       retries: 60
