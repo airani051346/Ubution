@@ -130,11 +130,12 @@ cd /opt/stack/ee/awx-ee
 put following content into execution-environment.yml
 
 ```YAML
+
 ---
 version: 3
 images:
   base_image:
-    name: quay.io/ansible/awx-ee:latest   # tip: pin to a digest once it works
+    name: quay.io/ansible/awx-ee:latest   # pin to digest once tested
 
 dependencies:
   python:
@@ -165,7 +166,30 @@ dependencies:
       - name: check_point.mgmt
       - name: check_point.gaia
       - name: ansible.netcommon
+
+additional_build_steps:
+  prepend_base:
+    - RUN dnf -y clean all && rm -rf /var/cache/dnf/*
+
+  prepend_builder:
+    - RUN dnf -y clean all && rm -rf /var/cache/dnf/*
+    - RUN /usr/bin/python3 -m pip install --upgrade pip setuptools wheel
+    - RUN pip config set global.index-url https://pypi.org/simple
+    - RUN pip config set global.timeout 600
+    - RUN pip config set global.retries 7
+    - ENV PIP_DEFAULT_TIMEOUT=600
+    - ENV PIP_NO_CACHE_DIR=1
+
+  append_builder:
+    - COPY bindep.txt /output/bindep.txt
 ```
+# create /opt/stack/ee/awx-ee/bindep.txt
+content
+```bash
+kernel-headers [!platform:el]
+```
+
+
 now run following commands after providing your domain name
 
 ```bash
