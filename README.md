@@ -29,7 +29,7 @@ sudo docker exec -t compose-gitlab-1 bash -lc "cat /etc/gitlab/initial_root_pass
   URL:  https://pma.<mydomain.com>
   MySQL root login is enabled remotely <br>
   username root <br>
-  default fassword is ChangeMe!Strong123 if not defined with --mysql-root-pass
+  default fassword is ChangeMeStrong123 if not defined with --mysql-root-pass
   
 # Import Database and Sampple Data
   create a database named netvars and import netvars.sql into mysql DB. You can find this file in SQL-DB folder <br>
@@ -222,7 +222,7 @@ sudo bash -lc 'IP='"$IP"'; for h in registry.fritz.lan gitlab.fritz.lan awx.frit
 done'
 
 
-printf 'ChangeMe!Reg123' | docker login http://127.0.0.1:5000 -u awx --password-stdin
+printf 'ChangeMeReg123' | docker login http://127.0.0.1:5000 -u awx --password-stdin
 sudo docker push registry.<DOMAIN>/awx-ee:cp-gaia-mgmt
 ```
 sanity check
