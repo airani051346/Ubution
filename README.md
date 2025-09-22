@@ -196,17 +196,20 @@ sudo rm -rf context
 echo 'kernel-headers [!platform:el]' > context/bindep.txt
 sudo ansible-builder build -t ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt -f execution-environment.yml --container-runtime docker -v 3
 
-sudo mkdir -p /etc/docker/certs.d/registry.fritz.lan
-sudo cp "$(sudo mkcert -CAROOT)/rootCA.pem" /etc/docker/certs.d/registry.fritz.lan/ca.crt
-sudo systemctl restart docker
+---> old-instruction--- sudo mkdir -p /etc/docker/certs.d/registry.fritz.lan
+---> old-instruction--- sudo cp "$(sudo mkcert -CAROOT)/rootCA.pem" /etc/docker/certs.d/registry.fritz.lan/ca.crt
+---> old-instruction--- sudo systemctl restart docker
 
 sudo docker push registry.<DOMAIN>/awx-ee:cp-gaia-mgmt
 
 sanity check:
-curl -k https://registry.<DOMAIN>/v2/_catalog
-or just: curl -k http://127.0.0.1:5000/v2/_catalog
+curl -k --user "awx:<your-password>" https://registry.<DOMAIN>/v2/_catalog
+or just: curl -k --user "awx:<your-password>" http://127.0.0.1:5000/v2/_catalog
+default setting and the related query is: curl -s --user "awx:ChangeMeReg123" https://registry.fritz.lan/v2/_catalog
+-> should list {"repositories":["awx-ee"]} 
 ```
 
+# Misc tests
 # in our deployment because all is on the same host we are using primary IP
 ## and adding it to the /etc/hosts file
 ```bash
@@ -216,11 +219,6 @@ sudo bash -lc 'IP='"$IP"'; for h in registry.fritz.lan gitlab.fritz.lan awx.frit
 done'
 ```
 
-sanity check
-```bash
-curl -s --user "${REGISTRY_USER}:${REGISTRY_PASS}" https://${REGISTRY_HOST}/v2/_catalog
-```
--> should list {"repositories":["awx-ee"]} 
 
 # execution env-check: verify end-to-end
 ```bash
