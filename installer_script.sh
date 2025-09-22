@@ -89,6 +89,7 @@ DO_K3S=false
 DO_AWX=false
 DO_STATUS=false
 DO_ALL=false
+DO_MYSQL_RESET=false
 DO_PATCH_DNS=true  # patch CoreDNS NodeHosts during/after k3s
 
 usage() {
@@ -139,6 +140,7 @@ parse_args() {
       --server-ip) SERVER_IP="$2"; shift ;;
       --mysql-port) MYSQL_PORT="$2"; shift ;;
       --mysql-root-pass) MYSQL_ROOT_PASSWORD="$2"; shift ;;
+      --mysql-reset) DO_MYSQL_RESET=true ;;
       --app-db-name) APP_DB_NAME="$2"; shift ;;
       --app-db-user) APP_DB_USER="$2"; shift ;;
       --app-db-pass) APP_DB_PASS="$2"; shift ;;
@@ -188,6 +190,12 @@ apt_install(){
     docker.io nginx python3 python3-yaml apache2-utils
   systemctl enable --now docker
   systemctl enable --now nginx
+}
+
+mysql_reset_volume(){
+  log "Resetting MySQL data volume (compose_mysql_data) — this will DELETE all DB data"
+  (cd "$COMPOSE_DIR" && docker compose down) || true
+  docker volume rm compose_mysql_data || true
 }
 
 ensure_compose(){
@@ -295,9 +303,9 @@ write_compose(){
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -uroot -p${DOLLAR}${DOLLAR}{MYSQL_ROOT_PASSWORD} --silent"]
       interval: 5s
-      timeout: 3s
-      retries: 60
-      start_period: 20s
+      timeout: 5s
+      retries: 120
+      start_period: 60s
     volumes:
       - mysql_data:/var/lib/mysql
     networks: [back]
@@ -808,6 +816,9 @@ fi
 # Compose services
 if $DO_MYSQL || $DO_PMA || $DO_GITLAB || $DO_REGISTRY; then
   setup_registry_auth             # ensure htpasswd exists before Nginx references it
+  if $DO_MYSQL_RESET; then
+    mysql_reset_volume
+  fi
   write_compose
   compose_up
 fi
