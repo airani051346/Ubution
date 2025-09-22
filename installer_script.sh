@@ -282,22 +282,21 @@ ensure_hosts_entries(){
 }
 
 mysql_volume_maybe_reset_first_boot(){
-  # Only act if the named volume already exists *and* looks half-initialized.
-  local vol="compose_mysql_data"
-  local mnt
+  local vol="compose_mysql_data" mnt count
   mnt="$(docker volume inspect "$vol" --format '{{.Mountpoint}}' 2>/dev/null || true)"
-  [[ -z "$mnt" ]] && return 0  # volume doesn't exist yet, nothing to do
+  [[ -z "$mnt" ]] && return 0
 
-  # Count files and key markers inside the volume
-  local count ibdata sysdir
   count=$(find "$mnt" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')
-  [[ -f "$mnt/ibdata1" ]] && ibdata=1 || ibdata=0
-  [[ -d "$mnt/mysql" ]] && sysdir=1 || sysdir=0
 
-  # If there are a few files but NOT both ibdata1 and mysql system dir,
-  # it's almost certainly a broken init. Auto-reset once.
-  if [[ "$count" -gt 0 && ( "$ibdata" -eq 0 || "$sysdir" -eq 0 ) ]]; then
-    log "MySQL volume appears half-initialized ($vol). Auto-resetting it once."
+  # Markers we expect in a *valid* initialized dir
+  local has_ibdata=0 has_sysdir=0 has_auto=0
+  [[ -f "$mnt/ibdata1" ]] && has_ibdata=1
+  [[ -d "$mnt/mysql"   ]] && has_sysdir=1
+  [[ -f "$mnt/auto.cnf" ]] && has_auto=1
+
+  # If anything exists but it doesn't look fully initialized, nuke it.
+  if [[ "$count" -gt 0 && ( "$has_ibdata" -eq 0 || "$has_sysdir" -eq 0 || "$has_auto" -eq 0 ) ]]; then
+    log "MySQL volume looks half-initialized ($vol). Auto-resetting it once."
     (cd "$COMPOSE_DIR" && docker compose down) || true
     docker volume rm "$vol" || true
   fi
