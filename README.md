@@ -13,7 +13,7 @@ watch -d sudo kubectl -n awx get pods
 <img width="917" height="206" alt="image" src="https://github.com/user-attachments/assets/3c2fcc38-88b2-448c-8126-9c6a3b90beff" />
 
 # how to access GitLab::<br>
-  URL:  https://gitlab.\<domain-name\>
+  URL:  https://gitlab.<-mydomain.com->
   Initial root password: 
 
 ```bash
@@ -21,7 +21,7 @@ sudo docker exec -t compose-gitlab-1 bash -lc "cat /etc/gitlab/initial_root_pass
 ```
 
 # how to access phpMyAdmin:<br> 
-  URL:  https://pma.< domain-name >
+  URL:  https://pma.<mydomain.com>
   MySQL root login is enabled remotely <br>
   username root <br>
   default fassword is ChangeMeStrong123 if not defined with --mysql-root-pass
@@ -42,7 +42,7 @@ FLUSH PRIVILEGES;
   on RoadMap 2026  URL:  https://orch.example.com
   
 # how to access AWX:<br>
-  URL:  https://awx.< domain-name >
+  URL:  https://awx.<mydomain.com>
   User: admin
   Pass: (what you set) or fetch with:
   
@@ -61,11 +61,11 @@ Go to https://github.com/airani051346/Ubution <br>
 <img width="763" height="184" alt="image" src="https://github.com/user-attachments/assets/c452f7a9-0ea6-47a5-b885-8938814dfc77" /><br>
 
 # Login to gitlab
-https://gitlab.< domain-name >//users/sign_in
+https://gitlab.<mydomain.com>//users/sign_in
 <img width="663" height="522" alt="image" src="https://github.com/user-attachments/assets/e9545ca1-f3bd-4c36-94d3-fb7608f12b9b" /><br>
 
 # Create a blank project (pub-deploy-cp)
-https://gitlab.< domain-name >/projects/new#blank_project 
+https://gitlab.<mydomain.com>/projects/new#blank_project 
 <img width="732" height="328" alt="image" src="https://github.com/user-attachments/assets/990852a0-445d-4305-bb1a-7a387ac1e3f2" /><br>
 <img width="494" height="208" alt="image" src="https://github.com/user-attachments/assets/0a8557a7-2eba-41bb-9b08-12c3e7f81b17" /><br>
 <img width="975" height="802" alt="image" src="https://github.com/user-attachments/assets/259d9a0a-6e57-4e2b-b1ef-e249ebd1bd9c" /><br>
