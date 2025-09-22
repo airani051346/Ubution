@@ -634,55 +634,6 @@ patch_coredns_hosts(){
   err "Failed to patch CoreDNS NodeHosts after retries"
 }
 
-
-
-old_patch_coredns_hosts(){
-  $DO_PATCH_DNS || return 0
-  export KUBECONFIG="$K3S_KUBECONFIG"
-  local A="$GITLAB_HOST" B="$AWX_HOST" C="$PMA_HOST" D="$REGISTRY_HOST"
-  if [[ "$DOMAIN" == "example.lan" ]]; then
-    log "Skipping CoreDNS patch: domain still example.lan"
-    return 0
-  fi
-  log "Waiting for CoreDNS ConfigMap..."
-  for i in {1..120}; do
-    kubectl -n kube-system get cm coredns >/dev/null 2>&1 && break || sleep 2
-  done
-  if ! kubectl -n kube-system get cm coredns >/dev/null 2>&1; then
-    err "CoreDNS configmap not found; try again later with --no-dns-patch off."
-    return 1
-  fi
-  local CUR_IP; CUR_IP="${SERVER_IP}"
-  log "Syncing CoreDNS NodeHosts -> ${CUR_IP} ${A} ${B} ${C} ${D}"
-  python3 - "$CUR_IP" "$A" "$B" "$C" "$D" <<'PY'
-import sys, json, subprocess
-ip,a,b,c,d = sys.argv[1:]
-ns="kube-system"; name="coredns"
-dobj=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
-core=dobj["data"].get("Corefile","")
-needle="hosts /etc/coredns/NodeHosts {"
-if needle not in core:
-    ins = " hosts /etc/coredns/NodeHosts {\n  ttl 60\n  reload 15s\n  fallthrough\n }\n"
-    fwd = "forward . /etc/resolv.conf"
-    core = core.replace(fwd, ins + " " + fwd) if fwd in core else core + "\n" + ins
-    dobj["data"]["Corefile"]=core
-    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(dobj).encode(), check=True)
-dobj=json.loads(subprocess.check_output(["kubectl","-n",ns,"get","cm",name,"-o","json"]))
-nodehosts=dobj["data"].get("NodeHosts","")
-targets={a,b,c,d}
-def line_has_targets(ln):
-    toks=ln.split()
-    return any(h in toks[1:] for h in targets)
-lines=[ln for ln in nodehosts.splitlines() if ln.strip() and not line_has_targets(ln)]
-lines.append(f"{ip} {a} {b} {c} {d}")
-new="\n".join(lines)+"\n"
-if dobj["data"].get("NodeHosts","") != new:
-    dobj["data"]["NodeHosts"]=new
-    subprocess.run(["kubectl","-n",ns,"apply","-f","-"], input=json.dumps(dobj).encode(), check=True)
-    subprocess.run(["kubectl","-n",ns,"rollout","restart","deploy/coredns"], check=True)
-PY
-}
-
 docker_login_registry(){
   log "Testing docker login to https://${REGISTRY_HOST}"
   if ! printf '%s' "$REGISTRY_PASS" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin; then
