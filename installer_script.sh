@@ -196,6 +196,7 @@ mysql_reset_volume(){
   log "Resetting MySQL data volume (compose_mysql_data) — this will DELETE all DB data"
   (cd "$COMPOSE_DIR" && docker compose down) || true
   docker volume rm compose_mysql_data || true
+  docker compose up -d
 }
 
 ensure_compose(){
