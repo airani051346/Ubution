@@ -13,7 +13,7 @@ watch -d sudo kubectl -n awx get pods
 <img width="917" height="206" alt="image" src="https://github.com/user-attachments/assets/3c2fcc38-88b2-448c-8126-9c6a3b90beff" />
 
 # how to access GitLab::<br>
-  URL:  https://gitlab.'< domain-name >
+  URL:  https://gitlab.\<domain-name\>
   Initial root password: 
 
 ```bash
