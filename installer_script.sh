@@ -281,6 +281,13 @@ ensure_hosts_entries(){
   fi
 }
 
+mysql_reset_volume(){
+  log "Force-resetting MySQL volume"
+  (cd "$COMPOSE_DIR" && docker compose down) || true
+  docker volume rm compose_mysql_data || true
+}
+
+
 mysql_volume_maybe_reset_first_boot(){
   local vol="compose_mysql_data" mnt count
   mnt="$(docker volume inspect "$vol" --format '{{.Mountpoint}}' 2>/dev/null || true)"
@@ -780,6 +787,10 @@ if $DO_K3S || $DO_AWX; then
   cleanup_k3s_port_claimers
   ensure_registry_trust_for_k3s
   $DO_PATCH_DNS && patch_coredns_hosts || true
+fi
+
+if $DO_MYSQL; then
+  mysql_reset_volume
 fi
 
 # MySQL bootstrap wait
