@@ -436,8 +436,8 @@ server {
     proxy_buffering off;
     proxy_read_timeout 900;
     proxy_send_timeout 900;
-    auth_basic "Registry";
-    auth_basic_user_file /opt/stack/registry/htpasswd;
+    # auth_basic "Registry";
+    # auth_basic_user_file /opt/stack/registry/htpasswd;
   }
 }
 
