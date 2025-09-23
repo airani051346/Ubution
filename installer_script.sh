@@ -164,10 +164,14 @@ check_os(){
 }
 
 apt_install(){
+  sudo add-apt-repository --yes --update ppa:ansible/ansible
   DEBIAN_FRONTEND=noninteractive apt-get update -y
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
     apt-transport-https ca-certificates curl gnupg lsb-release jq git make openssl \
-    docker.io nginx python3 python3-yaml apache2-utils
+    docker.io nginx python3 python3-yaml apache2-utils software-properties-common ansible pip
+    
+  sudo ansible-galaxy collection install check_point.mgmt --force
+  sudo pip install setuptools psycopg2-binary gitpython  pymysql  mysql-connector-python requests netmiko pyats httpx beautifulsoup4 lxml python-dateutil pytz pymongo cryptography bcrypt boto3 azure-mgmt-resource azure-storage-blob pexpect paramiko-expect paramiko
   systemctl enable --now docker
   systemctl enable --now nginx
 }
