@@ -37,13 +37,6 @@
         mode: "0755"
       delegate_to: localhost
     
-    #- name: Install extra Python libs
-    #  pip:
-    #    name:
-    #      - pymysql
-    #      - mysql-connector-python
-    #    state: present
-
     - name: Render and preview (first 300 chars), save to rendered-config/
       command: >
         python3 {{ renderer_src }}
