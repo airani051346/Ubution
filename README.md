@@ -227,16 +227,22 @@ kubectl -n awx logs reg-check || true
 kubectl -n awx delete pod reg-check
 ```
 
-# Use it in AWX without a registry (same Docker host)
+# Use it in AWX with local registry
+## Step 1
 In the AWX UI:<br>
 Credentials → Add → “Container Registry”<br>
 Registry URL: https://${REGISTRY_HOST}<br>
 Username/Password: ${REGISTRY_USER} / ${REGISTRY_PASS}<br>
+<img width="2157" height="787" alt="image" src="https://github.com/user-attachments/assets/47a3da0e-a447-411d-8c88-bc4e30f64155" />
+## Step 2
 Administration → Execution Environments → Add<br>
-Name: “Local EE”<br>
+Name: “awx-ee:cp-gaia-mgmt”<br>
 Image: ${REGISTRY_HOST}/awx-ee:cp-gaia-mgmt<br>
-Pull: Always (at least initially)<br>
+Pull: Always (at least initially in a later stage you can change it to pull only if not present or never)<br>
 Credential: the Container Registry credential from step 1<br>
+
+<img width="2159" height="1040" alt="image" src="https://github.com/user-attachments/assets/104d188b-e8b1-4fb8-af74-991ab3f0d852" />
+
 Use this EE on your Job Template (or set as default).<br>
 AWX will auto-create a Kubernetes imagePullSecret from the Container Registry credential and <br>
 attach it to the job pod. With our CoreDNS patch and k3s trust in place, the pull succeeds fully locally.
