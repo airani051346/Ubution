@@ -5,11 +5,11 @@
 
   vars:
     # Controller-side paths
-    work_dir: "/root/deploy-gw"
+    work_dir: /runner/deploy-gw
+    renderer_src: "{{ playbook_dir }}/python-script/render_from_mysql.py"
+    renderer_dest: "{{ work_dir }}/render_from_mysql.py"
     render_dir: "{{ work_dir }}/rendered-config"
-    done_dir: "{{ work_dir }}/config-done"
-    cfg_path: "{{ render_dir }}/{{ inventory_hostname }}.cfg"
-    done_path: "{{ done_dir }}/{{ inventory_hostname }}.cfg"
+    render_out: "{{ render_dir }}/{{ inventory_hostname }}.cfg"
 
     # Toggle: set false to preview only (no device changes)
     apply_changes: true

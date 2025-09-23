@@ -13,7 +13,6 @@
     db_name: "netvars"
 
     # --- Paths on controller ---
-    # work_dir: "/root/deploy-gw"
     work_dir: /runner/deploy-gw
     renderer_src: "{{ playbook_dir }}/python-script/render_from_mysql.py"
     renderer_dest: "{{ work_dir }}/render_from_mysql.py"
@@ -31,12 +30,19 @@
         - "{{ render_dir }}"
       delegate_to: localhost
 
-    #- name: Ensure renderer script is present (controller)
-    #  copy:
-    #    src: "{{ renderer_src }}"
-    #    dest: "{{ renderer_dest }}"
-    #    mode: "0755"
-    #  delegate_to: localhost
+    - name: Ensure renderer script is present (controller)
+      copy:
+        src: "{{ renderer_src }}"
+        dest: "{{ renderer_dest }}"
+        mode: "0755"
+      delegate_to: localhost
+    
+    #- name: Install extra Python libs
+    #  pip:
+    #    name:
+    #      - pymysql
+    #      - mysql-connector-python
+    #    state: present
 
     - name: Render and preview (first 300 chars), save to rendered-config/
       command: >
@@ -56,8 +62,23 @@
       changed_when: false
       delegate_to: localhost
 
+    #- name: Check DNS resolution for given host
+    #  vars:
+    #    dns_check_host: "pma.fritz.lan"
+    #  command: >
+    #    python3 -c "import socket; 
+    #    print('resolv.conf:\\n' + open('/etc/resolv.conf').read()); 
+    #    print('Resolution for {{ dns_check_host }}:', socket.getaddrinfo('{{ dns_check_host }}', None))"
+    #  register: dns_result
+    #  ignore_errors: yes
+
+    #- name: Show DNS resolution result
+    #  debug:
+    #    var: dns_result.stdout
+
+
+
     - name: Show render preview
       debug:
         var: render_rs.stdout
       delegate_to: localhost
-
