@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head><title>Create Cluster</title></head>
+<body>
+  <h2>Create Cluster</h2>
+  <form method="post">
+    Cluster Name: <input type="text" name="cluster_name" required><br><br>
+    Member 1 Name: <input type="text" name="member1" required>
+    Type:
+    <select name="member1_type">
+      <option value="spark">Gaia Embedded (Spark)</option>
+      <option value="full">Full Gaia</option>
+    </select><br><br>
+    Member 2 Name: <input type="text" name="member2" required>
+    Type:
+    <select name="member2_type">
+      <option value="spark">Gaia Embedded (Spark)</option>
+      <option value="full">Full Gaia</option>
+    </select><br><br>
+    <input type="submit" value="Create Cluster">
+  </form>
+  <a href="{{ url_for('index') }}">Back</a>
+</body>
+</html>
