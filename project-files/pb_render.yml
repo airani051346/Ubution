@@ -5,7 +5,7 @@
 
   vars:
     # --- DB ---
-    mysql_host: "127.0.0.1"
+    mysql_host: 192.168.178.90
     mysql_port: 3306
     mysql_db: "netvars"
     mysql_user: "ansible"
@@ -13,8 +13,9 @@
     db_name: "netvars"
 
     # --- Paths on controller ---
-    work_dir: "/root/deploy-gw"
-    renderer_src: "python-script/render_from_mysql.py"   
+    # work_dir: "/root/deploy-gw"
+    work_dir: /runner/deploy-gw
+    renderer_src: "{{ playbook_dir }}/python-script/render_from_mysql.py"
     renderer_dest: "{{ work_dir }}/render_from_mysql.py"
     render_dir: "{{ work_dir }}/rendered-config"
     render_out: "{{ render_dir }}/{{ inventory_hostname }}.cfg"
@@ -55,8 +56,8 @@
       changed_when: false
       delegate_to: localhost
 
-    #- name: Show render preview
-    #  debug:
-    #    var: render_rs.stdout
-    #  delegate_to: localhost
+    - name: Show render preview
+      debug:
+        var: render_rs.stdout
+      delegate_to: localhost
 
