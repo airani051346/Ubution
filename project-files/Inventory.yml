@@ -20,6 +20,7 @@ all:
       ansible_host: 2a04:6447:900:100::20
     vpn-gw-1:
       ansible_host: 192.168.178.123
+      ansible_ssh_extra_args: -4
       
   children:
     MT_GW:

@@ -1,15 +1,15 @@
 # pb_apply.yml
 - name: Apply rendered config to device via SSH (raw) and archive file
-  hosts: "{{ my_playbook_hosts | default('all') }}"
+  hosts: "{{ inventory_hostname }}"
   gather_facts: false
 
   vars:
     # Controller-side paths
-    work_dir: /runner/deploy-gw
-    renderer_src: "{{ playbook_dir }}/python-script/render_from_mysql.py"
-    renderer_dest: "{{ work_dir }}/render_from_mysql.py"
+    work_dir: "{{ playbook_dir }}"
     render_dir: "{{ work_dir }}/rendered-config"
-    render_out: "{{ render_dir }}/{{ inventory_hostname }}.cfg"
+    done_dir: "{{ work_dir }}/config-done"
+    cfg_path: "{{ render_dir }}/{{ inventory_hostname }}.cfg"
+    done_path: "{{ done_dir }}/{{ inventory_hostname }}.cfg"
 
     # Toggle: set false to preview only (no device changes)
     apply_changes: true
@@ -117,14 +117,23 @@
           when: apply_changes | bool
           changed_when: true
 
-        - name: Run clish lines (remote) one-by-one
+        - name: Run clish lines (Gaia Full gateways)
           raw: "clish -s -c {{ line | quote }}"
           loop: "{{ exec_blocks | selectattr('type','equalto','clish') | map(attribute='items') | sum(start=[]) }}"
           loop_control:
             loop_var: line
-          when: apply_changes | bool
-          changed_when: true
-          register: clish_rs
+          when:
+            - apply_changes | bool
+            - gaia_mode | default('spark') == "full"
+
+        - name: Run clish lines (Spark gateways, default)
+          raw: "{{ line }}"
+          loop: "{{ exec_blocks | selectattr('type','equalto','clish') | map(attribute='items') | sum(start=[]) }}"
+          loop_control:
+            loop_var: line
+          when:
+            - apply_changes | bool
+            - gaia_mode | default('spark') != "full"
 
         - name: Run ExpertMode blocks (remote) using expect
           vars:
