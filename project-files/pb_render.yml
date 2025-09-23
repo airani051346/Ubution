@@ -13,10 +13,8 @@
     db_name: "netvars"
 
     # --- Paths on controller ---
-    # work_dir: "/root/deploy-gw"
-    work_dir: /runner/deploy-gw
+    work_dir: "{{ playbook_dir }}"
     renderer_src: "python-script/render_from_mysql.py"   
-    renderer_dest: "{{ work_dir }}/render_from_mysql.py"
     render_dir: "{{ work_dir }}/rendered-config"
     render_out: "{{ render_dir }}/{{ inventory_hostname }}.cfg"
 
