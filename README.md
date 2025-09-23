@@ -247,8 +247,6 @@ Use this EE on your Job Template (or set as default).<br>
 AWX will auto-create a Kubernetes imagePullSecret from the Container Registry credential and <br>
 attach it to the job pod. With our CoreDNS patch and k3s trust in place, the pull succeeds fully locally.
 
-<img width="1641" height="776" alt="image" src="https://github.com/user-attachments/assets/e8b9222b-57d3-4050-a117-199428d729f0" /><br>
-
 Assign it on your Organization or Job Template
 
 # Verify in awx
