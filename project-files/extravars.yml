@@ -1,6 +1,0 @@
----
-- name: My play targeting hosts specified in the command line 
-  hosts: '{{ my_playbook_hosts }}'
-  tasks:
-    - debug:
-        msg: 'Running on hosts specified by my extra vars'
