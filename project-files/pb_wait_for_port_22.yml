@@ -1,0 +1,21 @@
+# wait_until_reachable.yml
+---
+- name: Wait for SSH port on Spark (no /bin/sh required)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    target_host: "{{ hostvars[inventory_hostname].ansible_host }}"
+    wait_timeout_seconds: 600
+    poll_interval: 5
+
+  tasks:
+    - name: Wait until TCP port 22 is reachable
+      wait_for:
+        host: "{{ target_host }}"
+        port: 22
+        timeout: "{{ wait_timeout_seconds }}"
+        sleep: "{{ poll_interval }}"
+
+    - name: Confirm success
+      debug:
+        msg: "Host {{ inventory_hostname }} ({{ target_host }}) is reachable on port 22"

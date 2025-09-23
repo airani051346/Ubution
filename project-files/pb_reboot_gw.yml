@@ -1,0 +1,19 @@
+---
+- name: Trigger a reboot and exit immediately
+  hosts: "{{ inventory_hostname }}"
+  gather_facts: false
+  any_errors_fatal: true
+
+  tasks:
+    - name: Reboot Spark gateway with confirmation
+      expect:
+        command: ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null admin@{{ ansible_host }} "reboot"
+        responses:
+          'admin@.*password:': "{{ ansible_password }}"
+          'Are you sure\? \(yes/no\):': "yes"
+        timeout: 10
+      delegate_to: localhost
+      ignore_errors: true
+
+    - name: Stop the play after triggering reboot
+      meta: end_play
