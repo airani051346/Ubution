@@ -222,8 +222,7 @@ if $DO_NGINX; then
       KEY="${SSL_DIR}/${host}.key"
       if [[ ! -f "$CRT" || ! -f "$KEY" ]]; then
         warn "Generating self-signed certificate for ${host}..."
-        openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
-          -subj "/CN=${host}" -keyout "$KEY" -out "$CRT" >/dev/null 2>&1
+        openssl req -x509 -nodes -newkey rsa:2048 -days 825 -subj "/CN=${host}" -keyout "$KEY" -out "$CRT" >/dev/null 2>&1
         chmod 600 "$KEY"
       fi
     done
