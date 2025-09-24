@@ -65,7 +65,7 @@ while [[ $# -gt 0 ]]; do
     *) err "Unknown option: $1"; usage; exit 1 ;;
   esac
 done
-$DO_ALL && { DO_MYSQL=true; DO_PMA=true; DO_GITLAB=true; DO_NGINX=true; }
+$DO_ALL && { DO_MYSQL=true; DO_PMA=true; DO_GITLAB=true; DO_NGINX=true; ENABLE_TLS=true; }
 if ! $DO_MYSQL && ! $DO_PMA && ! $DO_GITLAB && ! $DO_NGINX; then usage; exit 1; fi
 need_root
 
