@@ -1,16 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# =========================
-# Simple LAN Stack Installer
-# - Docker CE + compose plugin (from Docker’s official APT repo)
-# - MySQL 8 (Docker)
-# - phpMyAdmin (Docker)
-# - GitLab CE (Docker)
-# - Nginx reverse proxy (host)
-# Optional: --tls self-signed HTTPS
-# =========================
-
 # -------- Defaults --------
 DOMAIN="fritz.lan"
 DO_MYSQL=false
@@ -19,6 +9,10 @@ DO_GITLAB=false
 DO_NGINX=false
 DO_ALL=false
 ENABLE_TLS=false
+
+DEFAULT_MYSQL_ROOT_PASSWORD="ChangeMeStrong123"
+MYSQL_ROOT_PASSWORD_ARG=""
+FORCE_REINIT_MYSQL=false
 
 BASE_DIR="/opt/fritz_stack"
 COMPOSE_FILE="${BASE_DIR}/docker-compose.yml"
@@ -30,6 +24,7 @@ GITLAB_HOST_DEFAULT="gitlab"
 PMA_PORT=8080
 GITLAB_PORT=8081
 MYSQL_PORT=3306
+
 
 log() { echo -e "\e[1;32m[+]\e[0m $*"; }
 warn() { echo -e "\e[1;33m[!]\e[0m $*"; }
@@ -57,6 +52,8 @@ while [[ $# -gt 0 ]]; do
     --all) DO_ALL=true; shift ;;
     --domain) DOMAIN="$2"; shift 2 ;;
     --mysql) DO_MYSQL=true; shift ;;
+    --mysql-root-password) MYSQL_ROOT_PASSWORD_ARG="$2"; shift 2 ;;
+    --force-reinit-mysql) FORCE_REINIT_MYSQL=true; shift ;;
     --pma|--phpmyadmin) DO_PMA=true; shift ;;
     --gitlab) DO_GITLAB=true; shift ;;
     --nginx) DO_NGINX=true; shift ;;
@@ -117,11 +114,24 @@ else
 fi
 
 # -------- Secrets --------
-if [[ ! -f "$MYSQL_ROOT_FILE" ]]; then
-  log "Generating MySQL root password secret..."
-  openssl rand -base64 24 > "$MYSQL_ROOT_FILE"
+mkdir -p "$(dirname "$MYSQL_ROOT_FILE")"
+
+if [[ -n "$MYSQL_ROOT_PASSWORD_ARG" ]]; then
+  # Overwrite secret file even if it exists
+  printf '%s' "$MYSQL_ROOT_PASSWORD_ARG" > "$MYSQL_ROOT_FILE"
   chmod 600 "$MYSQL_ROOT_FILE"
+  log "MySQL root password set from --mysql-root-password (secret overwritten)."
+else
+  if [[ ! -f "$MYSQL_ROOT_FILE" ]]; then
+    # Write default only if no secret exists yet
+    printf '%s' "$DEFAULT_MYSQL_ROOT_PASSWORD" > "$MYSQL_ROOT_FILE"
+    chmod 600 "$MYSQL_ROOT_FILE"
+    log "MySQL root password set to default (${DEFAULT_MYSQL_ROOT_PASSWORD})."
+  else
+    log "Using existing MySQL root password secret."
+  fi
 fi
+
 MYSQL_ROOT_PASSWORD="$(cat "$MYSQL_ROOT_FILE")"
 
 # -------- Compose file --------
