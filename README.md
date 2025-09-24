@@ -1,6 +1,5 @@
 # how its designed to work:
-<img width="3268" height="1720" alt="image" src="https://github.com/user-attachments/assets/6ccead8d-7db8-440b-9395-5c041c6a6909" />
-
+<img width="3428" height="2044" alt="image" src="https://github.com/user-attachments/assets/9657df03-7aff-4e11-a739-47023e960e47" />
 
 # how to install:
 set env variable for the installation session
