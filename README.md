@@ -98,7 +98,12 @@ cd ~
 [ -d "$HOME/Ubution/.git" ] && git -C "$HOME/Ubution" pull --ff-only  || git clone https://gitlab.fritz.lan/root/ubution.git "$HOME/Ubution"
 ```
 
-# executoion flow
+# execution flow
+put following content into a bash script 
+
+usage: bash <script-name> <destination-host> [full]
+full is signaling that the destionation is a full-gaia gateway
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
