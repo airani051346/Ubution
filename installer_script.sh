@@ -1,410 +1,337 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2155
-set -euo pipefail
+set -Eeuo pipefail
 
-# ==============================================
-# install_fritz_stack.sh
-# One-host setup for:
-#   - Docker + Nginx (host)
-#   - Self-signed wildcard TLS for fritz.lan
-#   - MySQL 8 (Docker)
-#   - phpMyAdmin (Docker)
-#   - GitLab CE (Docker)
-#   - Nginx TLS reverse proxy
-#   - Ansible + pip stack (AFTER Docker), Ansible collection, Python modules
-# ==============================================
+# =========================
+# Simple LAN Stack Installer
+# - Docker + compose plugin
+# - MySQL 8 (Docker)
+# - phpMyAdmin (Docker)
+# - GitLab CE (Docker)
+# - Nginx reverse proxy (host)
+# HTTP by default; add --tls for self-signed HTTPS
+# =========================
 
-# ----------------- Defaults -----------------
-: "${DOMAIN:=fritz.lan}"
-: "${GITLAB_HOST:=gitlab.${DOMAIN}}"
-: "${PMA_HOST:=pma.${DOMAIN}}"
-: "${STACK_DIR:=/opt/fritz_stack}"
-: "${CERT_DIR:=/etc/nginx/certs/${DOMAIN}}"
-: "${MYSQL_ROOT_PASSWORD:=}"          # if empty, will be generated and saved
-
-# Containers / images / network
-NET_NAME="fritz_net"
-MYSQL_CONT="mysql8"
-PMA_CONT="pma"
-GITLAB_CONT="gitlab"
-MYSQL_IMAGE="mysql:8"
-PMA_IMAGE="phpmyadmin:latest"
-GITLAB_IMAGE="gitlab/gitlab-ce:latest"
-
-# Host ports
-MYSQL_PORT=3306
-PMA_PORT=8081
-GITLAB_HTTP_PORT=8929
-GITLAB_SSH_PORT=2222
-
-# Flags
-DO_ALL=false
-DO_PACKAGES=false
-DO_CERTS=false
-DO_NGINX=false
+# -------- Defaults --------
+DOMAIN="fritz.lan"
 DO_MYSQL=false
 DO_PMA=false
 DO_GITLAB=false
-DO_ANSIBLE_COLLECTION=false
-DO_PIP_MODULES=false
-DEBUG=false
+DO_NGINX=false
+DO_ALL=false
+ENABLE_TLS=false
 
-# ----------------- Helpers -----------------
-log()  { echo -e "\033[1;32m[+] $*\033[0m"; }
-warn() { echo -e "\033[1;33m[!] $*\033[0m"; }
-err()  { echo -e "\033[1;31m[!] $*\033[0m" >&2; }
-need_root() { [[ $EUID -eq 0 ]] || { err "Please run as root (sudo)."; exit 1; }; }
+# Paths & names
+BASE_DIR="/opt/fritz_stack"
+COMPOSE_FILE="${BASE_DIR}/docker-compose.yml"
+SECRETS_DIR="${BASE_DIR}/secrets"
+MYSQL_ROOT_FILE="${SECRETS_DIR}/mysql_root_password"
+NETWORK_NAME="fritz_net"                  # stable name
+PMA_HOST_DEFAULT="pma"
+GITLAB_HOST_DEFAULT="gitlab"
+PMA_PORT=8080       # host loopback -> pma container 80
+GITLAB_PORT=8081    # host loopback -> gitlab container 80
+MYSQL_PORT=3306     # host loopback -> mysql container 3306
 
-trap 'err "Failed at line $LINENO. Last command: \"${BASH_COMMAND}\""' ERR
+# -------- Helpers --------
+log() { echo -e "\e[1;32m[+]\e[0m $*"; }
+warn() { echo -e "\e[1;33m[!]\e[0m $*"; }
+err() { echo -e "\e[1;31m[x]\e[0m $*" >&2; }
+need_root() { [[ $EUID -eq 0 ]] || { err "Run as root (sudo)."; exit 1; }; }
 
 usage() {
   cat <<EOF
-Usage: $0 [actions] [options]
-
-Actions:
-  --all                      Run everything in the correct order
-  --packages                 Install Docker + Nginx + base packages, then (AFTER Docker) Ansible + pip stack
-  --certs                    Generate self-signed TLS for ${DOMAIN} and *.${DOMAIN}
-  --nginx                    Configure Nginx reverse proxy for GitLab + phpMyAdmin
-  --mysql                    Deploy MySQL 8 container
-  --pma                      Deploy phpMyAdmin container
-  --gitlab                   Deploy GitLab CE container
-  --ansible-collection       Install Ansible collection check_point.mgmt (ensures Docker first)
-  --pip-modules              Install Python (pip) modules list (ensures Docker first)
-  --debug                    Bash trace mode
+Usage: $0 [--all] [--domain fritz.lan] [--mysql] [--pma] [--gitlab] [--nginx] [--tls] [--help]
 
 Options:
-  --domain <name>            Base domain (default: ${DOMAIN})
-  --gitlab-host <fqdn>       GitLab host (default: gitlab.\${DOMAIN})
-  --pma-host <fqdn>          phpMyAdmin host (default: pma.\${DOMAIN})
-  --mysql-root-password <pw> MySQL root password (random if omitted)
+  --all                 Install/start Docker + MySQL + phpMyAdmin + GitLab + Nginx
+  --domain <name>       Base domain (default: fritz.lan). Services become:
+                        pma.<domain>, gitlab.<domain>
+  --mysql               Install/start only MySQL (and Docker if needed)
+  --pma                 Install/start only phpMyAdmin (depends on MySQL)
+  --gitlab              Install/start only GitLab CE
+  --nginx               Configure Nginx reverse proxy on host
+  --tls                 Generate self-signed certs and serve HTTPS (redirect from HTTP)
+  --help                Show this help
 
 Examples:
-  sudo $0 --all
-  sudo $0 --packages --certs --nginx
-  sudo $0 --mysql --pma --gitlab
+  $0 --all --domain fritz.lan
+  $0 --mysql --pma --nginx --domain mylab.lan
+  $0 --gitlab --nginx --tls
 EOF
-  exit 1
 }
 
-# ----------------- Arg parsing -----------------
+# -------- Arg parse --------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --all) DO_ALL=true ;;
-    --packages) DO_PACKAGES=true ;;
-    --certs) DO_CERTS=true ;;
-    --nginx) DO_NGINX=true ;;
-    --mysql) DO_MYSQL=true ;;
-    --pma) DO_PMA=true ;;
-    --gitlab) DO_GITLAB=true ;;
-    --ansible-collection) DO_ANSIBLE_COLLECTION=true ;;
-    --pip-modules) DO_PIP_MODULES=true ;;
-    --debug) DEBUG=true ;;
-    --domain) DOMAIN="$2"; shift ;;
-    --gitlab-host) GITLAB_HOST="$2"; shift ;;
-    --pma-host) PMA_HOST="$2"; shift ;;
-    --mysql-root-password) MYSQL_ROOT_PASSWORD="$2"; shift ;;
-    -h|--help) usage ;;
-    *) err "Unknown arg: $1"; usage ;;
+    --all) DO_ALL=true; shift ;;
+    --domain) DOMAIN="$2"; shift 2 ;;
+    --mysql) DO_MYSQL=true; shift ;;
+    --pma|--phpmyadmin) DO_PMA=true; shift ;;
+    --gitlab) DO_GITLAB=true; shift ;;
+    --nginx) DO_NGINX=true; shift ;;
+    --tls) ENABLE_TLS=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) err "Unknown option: $1"; usage; exit 1 ;;
   esac
-  shift
 done
 
-$DEBUG && set -x
-need_root
-
-# Apply domain-dependent defaults after possible overrides
-GITLAB_HOST="${GITLAB_HOST:-gitlab.${DOMAIN}}"
-PMA_HOST="${PMA_HOST:-pma.${DOMAIN}}"
-CERT_DIR="/etc/nginx/certs/${DOMAIN}"
-
-# If --all, flip all toggles in the right order
 if $DO_ALL; then
-  DO_PACKAGES=true
-  DO_CERTS=true
-  DO_NGINX=true
   DO_MYSQL=true
   DO_PMA=true
   DO_GITLAB=true
-  DO_ANSIBLE_COLLECTION=true
-  DO_PIP_MODULES=true
+  DO_NGINX=true
 fi
 
-# If no actions, show help
-if ! $DO_PACKAGES && ! $DO_CERTS && ! $DO_NGINX && ! $DO_MYSQL && ! $DO_PMA && ! $DO_GITLAB && ! $DO_ANSIBLE_COLLECTION && ! $DO_PIP_MODULES; then
-  usage
+if ! $DO_MYSQL && ! $DO_PMA && ! $DO_GITLAB && ! $DO_NGINX; then
+  usage; exit 1
 fi
 
-mkdir -p "${STACK_DIR}"
+need_root
 
-# ----------------- Functions -----------------
-ensure_service() {
-  local svc="$1"
-  systemctl enable --now "$svc" >/dev/null 2>&1 || true
-}
+PMA_FQDN="${PMA_HOST_DEFAULT}.${DOMAIN}"
+GITLAB_FQDN="${GITLAB_HOST_DEFAULT}.${DOMAIN}"
+mkdir -p "$BASE_DIR" "$SECRETS_DIR"
 
-install_docker_and_nginx() {
-  log "Installing Docker + Nginx + base packages ..."
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y \
-    apt-transport-https ca-certificates curl gnupg lsb-release jq git make openssl \
-    docker.io nginx python3 python3-yaml apache2-utils software-properties-common
+# -------- Install base packages --------
+log "Installing base packages (Docker, compose plugin, Nginx, tools)..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y \
+  apt-transport-https ca-certificates curl gnupg lsb-release jq git make openssl \
+  docker.io docker-compose-plugin nginx
 
-  ensure_service docker
-  ensure_service nginx
+systemctl enable --now docker
+systemctl enable --now nginx
 
-  # Create docker network (idempotent)
-  if ! docker network ls --format '{{.Name}}' | grep -qx "${NET_NAME}"; then
-    log "Creating docker network: ${NET_NAME}"
-    docker network create "${NET_NAME}"
-  else
-    warn "Docker network ${NET_NAME} already exists."
+# -------- Docker network (idempotent) --------
+if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
+  log "Creating Docker network: ${NETWORK_NAME}"
+  docker network create "$NETWORK_NAME" >/dev/null
+else
+  log "Docker network ${NETWORK_NAME} already exists (ok)."
+fi
+
+# -------- Secrets --------
+if [[ ! -f "$MYSQL_ROOT_FILE" ]]; then
+  log "Generating MySQL root password secret..."
+  openssl rand -base64 24 > "$MYSQL_ROOT_FILE"
+  chmod 600 "$MYSQL_ROOT_FILE"
+fi
+MYSQL_ROOT_PASSWORD="$(cat "$MYSQL_ROOT_FILE")"
+
+# -------- Write docker-compose.yml --------
+log "Writing compose file to ${COMPOSE_FILE}"
+cat > "$COMPOSE_FILE" <<'YAML'
+version: "3.9"
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: mysql8
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+    secrets:
+      - mysql_root_password
+    command: ["--default-authentication-plugin=mysql_native_password"]
+    ports:
+      - "127.0.0.1:__MYSQL_PORT__:3306"
+    volumes:
+      - ./mysql/data:/var/lib/mysql
+    networks: [ __NETWORK_NAME__ ]
+
+  pma:
+    image: phpmyadmin:latest
+    container_name: phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mysql
+      PMA_ABSOLUTE_URI: __PMA_SCHEME__://__PMA_FQDN__/
+    depends_on: [ mysql ]
+    ports:
+      - "127.0.0.1:__PMA_PORT__:80"
+    networks: [ __NETWORK_NAME__ ]
+
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab
+    restart: unless-stopped
+    hostname: __GITLAB_FQDN__
+    shm_size: "256m"
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url "__GITLAB_SCHEME__://__GITLAB_FQDN__";
+        nginx['listen_port'] = 80;
+        nginx['listen_https'] = false;
+        # Uncomment to enable SSH cloning via host port mapping later:
+        # gitlab_rails['gitlab_shell_ssh_port'] = 2222;
+    ports:
+      - "127.0.0.1:__GITLAB_PORT__:80"
+      # SSH (optional): - "0.0.0.0:2222:22"
+    volumes:
+      - ./gitlab/config:/etc/gitlab
+      - ./gitlab/logs:/var/log/gitlab
+      - ./gitlab/data:/var/opt/gitlab
+    networks: [ __NETWORK_NAME__ ]
+
+networks:
+  __NETWORK_NAME__:
+    external: true
+
+secrets:
+  mysql_root_password:
+    file: ./secrets/mysql_root_password
+YAML
+
+# Replace placeholders
+SCHEME_HTTP="http"
+[[ "$ENABLE_TLS" == true ]] && SCHEME_HTTP="https"
+
+sed -i \
+  -e "s|__NETWORK_NAME__|${NETWORK_NAME}|g" \
+  -e "s|__MYSQL_PORT__|${MYSQL_PORT}|g" \
+  -e "s|__PMA_PORT__|${PMA_PORT}|g" \
+  -e "s|__GITLAB_PORT__|${GITLAB_PORT}|g" \
+  -e "s|__PMA_FQDN__|${PMA_FQDN}|g" \
+  -e "s|__GITLAB_FQDN__|${GITLAB_FQDN}|g" \
+  -e "s|__PMA_SCHEME__|${SCHEME_HTTP}|g" \
+  -e "s|__GITLAB_SCHEME__|${SCHEME_HTTP}|g" \
+  "$COMPOSE_FILE"
+
+# -------- Start selected services --------
+services_to_up=()
+$DO_MYSQL && services_to_up+=("mysql")
+$DO_PMA && services_to_up+=("pma")
+$DO_GITLAB && services_to_up+=("gitlab")
+
+if [[ ${#services_to_up[@]} -gt 0 ]]; then
+  log "Starting services: ${services_to_up[*]}"
+  (cd "$BASE_DIR" && docker compose up -d "${services_to_up[@]}")
+fi
+
+# -------- Nginx config --------
+if $DO_NGINX; then
+  log "Configuring Nginx reverse proxy for ${PMA_FQDN} and ${GITLAB_FQDN}"
+  SSL_DIR="/etc/nginx/ssl"
+  mkdir -p "$SSL_DIR"
+
+  # Certificates (if --tls)
+  if $ENABLE_TLS; then
+    for host in "$PMA_FQDN" "$GITLAB_FQDN"; do
+      CRT="${SSL_DIR}/${host}.crt"
+      KEY="${SSL_DIR}/${host}.key"
+      if [[ ! -f "$CRT" || ! -f "$KEY" ]]; then
+        warn "Generating self-signed certificate for ${host}..."
+        openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+          -subj "/CN=${host}" \
+          -keyout "$KEY" -out "$CRT" >/dev/null 2>&1
+        chmod 600 "$KEY"
+      else
+        log "Found existing cert for ${host} (ok)."
+      fi
+    done
   fi
-}
 
-ensure_docker_installed() {
-  if ! command -v docker >/dev/null 2>&1; then
-    warn "Docker not found. Installing Docker + Nginx first ..."
-    install_docker_and_nginx
-  else
-    ensure_service docker
-    docker network inspect "${NET_NAME}" >/dev/null 2>&1 || docker network create "${NET_NAME}"
-  fi
-}
+  NCONF="/etc/nginx/sites-available/fritz_stack.conf"
+  cat > "$NCONF" <<NGINX
+# Auto-generated by stack installer
+# Access:
+#   ${SCHEME_HTTP}://${PMA_FQDN}
+#   ${SCHEME_HTTP}://${GITLAB_FQDN}
 
-# >>> This block runs AFTER Docker is installed (per your request)
-setup_ansible_and_python_stack() {
-  ensure_docker_installed  # keep the order constraint
-
-  log "Adding Ansible PPA and installing Ansible + pip ..."
-  add-apt-repository --yes --update ppa:ansible/ansible
-  apt-get update -y
-  # 'pip' package is not present on modern Ubuntu; use python3-pip
-  apt-get install -y software-properties-common ansible python3-pip
-
-  # Create a 'pip' shim if missing, to satisfy scripts that call 'pip'
-  if ! command -v pip >/dev/null 2>&1 && command -v pip3 >/dev/null 2>&1; then
-    ln -sf "$(command -v pip3)" /usr/local/bin/pip
-  fi
-
-  log "Installing Ansible collection check_point.mgmt ..."
-  ansible-galaxy collection install check_point.mgmt --force
-
-  local PIP_CMD="$(command -v pip || command -v pip3)"
-  log "Installing Python modules via ${PIP_CMD} ..."
-  "${PIP_CMD}" install -U setuptools
-  "${PIP_CMD}" install \
-    psycopg2-binary gitpython pymysql mysql-connector-python requests netmiko pyats \
-    httpx beautifulsoup4 lxml python-dateutil pytz pymongo cryptography bcrypt \
-    boto3 azure-mgmt-resource azure-storage-blob pexpect paramiko-expect paramiko
-}
-# <<< End of AFTER-Docker block
-
-generate_certs() {
-  log "Generating self-signed wildcard certificate for ${DOMAIN} ..."
-  mkdir -p "${CERT_DIR}"
-  local KEY="${CERT_DIR}/privkey.pem"
-  local CRT="${CERT_DIR}/fullchain.pem"
-
-  if [[ -s "${KEY}" && -s "${CRT}" ]]; then
-    warn "Certificates already exist in ${CERT_DIR}, skipping."
-    return
-  fi
-
-  openssl req -x509 -nodes -newkey rsa:4096 -days 825 \
-    -keyout "${KEY}" -out "${CRT}" \
-    -subj "/CN=${DOMAIN}" \
-    -addext "subjectAltName = DNS:${DOMAIN},DNS:*.${DOMAIN}" \
-    -addext "keyUsage = digitalSignature, keyEncipherment" \
-    -addext "extendedKeyUsage = serverAuth"
-
-  chmod 600 "${KEY}"
-  log "Created: ${CRT} and ${KEY}"
-}
-
-configure_hostsfile() {
-  if ! grep -qE "\\s${GITLAB_HOST}(\\s|$)" /etc/hosts; then
-    log "Adding ${GITLAB_HOST} to /etc/hosts -> 127.0.0.1"
-    echo "127.0.0.1 ${GITLAB_HOST}" >> /etc/hosts
-  fi
-  if ! grep -qE "\\s${PMA_HOST}(\\s|$)" /etc/hosts; then
-    log "Adding ${PMA_HOST} to /etc/hosts -> 127.0.0.1"
-    echo "127.0.0.1 ${PMA_HOST}" >> /etc/hosts
-  fi
-}
-
-configure_nginx() {
-  log "Configuring Nginx reverse proxy ..."
-  configure_hostsfile
-
-  local SSL_CRT="${CERT_DIR}/fullchain.pem"
-  local SSL_KEY="${CERT_DIR}/privkey.pem"
-  if [[ ! -s "${SSL_CRT}" || ! -s "${SSL_KEY}" ]]; then
-    warn "TLS files missing in ${CERT_DIR}. Generating now ..."
-    generate_certs
-  fi
-
-  cat > /etc/nginx/conf.d/websocket_upgrade.conf <<'CONF'
-map $http_upgrade $connection_upgrade {
-  default upgrade;
-  ''      close;
-}
-CONF
-
-  mkdir -p /etc/nginx/snippets
-  cat > /etc/nginx/snippets/proxy_common.conf <<'PROXY'
-proxy_http_version 1.1;
-proxy_set_header Host $host;
-proxy_set_header X-Real-IP $remote_addr;
-proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-proxy_set_header X-Forwarded-Proto https;
-proxy_set_header Upgrade $http_upgrade;
-proxy_set_header Connection $connection_upgrade;
-proxy_read_timeout 300;
-client_max_body_size 512m;
-PROXY
-
-  cat > "/etc/nginx/sites-available/${GITLAB_HOST}.conf" <<NGINX
+# ------- phpMyAdmin -------
 server {
     listen 80;
-    server_name ${GITLAB_HOST};
-    return 301 https://\$host\$request_uri;
+    server_name ${PMA_FQDN};
+$( $ENABLE_TLS && echo "    return 301 https://\$host\$request_uri;" )
+$( !$ENABLE_TLS && echo "    location / { proxy_pass http://127.0.0.1:${PMA_PORT}; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto \$scheme; }" )
 }
+$( $ENABLE_TLS && cat <<'HTTPSPMA'
 server {
     listen 443 ssl http2;
-    server_name ${GITLAB_HOST};
-    ssl_certificate ${SSL_CRT};
-    ssl_certificate_key ${SSL_KEY};
+    server_name __PMA_FQDN__;
+
+    ssl_certificate     /etc/nginx/ssl/__PMA_FQDN__.crt;
+    ssl_certificate_key /etc/nginx/ssl/__PMA_FQDN__.key;
+
+    client_max_body_size 64m;
+
     location / {
-        proxy_pass http://127.0.0.1:${GITLAB_HTTP_PORT};
-        include snippets/proxy_common.conf;
+        proxy_pass http://127.0.0.1:__PMA_PORT__;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
-NGINX
+HTTPSPMA
+)
 
-  cat > "/etc/nginx/sites-available/${PMA_HOST}.conf" <<NGINX
+# ------- GitLab -------
 server {
     listen 80;
-    server_name ${PMA_HOST};
-    return 301 https://\$host\$request_uri;
+    server_name ${GITLAB_FQDN};
+$( $ENABLE_TLS && echo "    return 301 https://\$host\$request_uri;" )
+$( !$ENABLE_TLS && echo "    location / { proxy_read_timeout 300; proxy_connect_timeout 300; proxy_pass http://127.0.0.1:${GITLAB_PORT}; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto \$scheme; }" )
 }
+$( $ENABLE_TLS && cat <<'HTTPSGL'
 server {
     listen 443 ssl http2;
-    server_name ${PMA_HOST};
-    ssl_certificate ${SSL_CRT};
-    ssl_certificate_key ${SSL_KEY};
+    server_name __GITLAB_FQDN__;
+
+    ssl_certificate     /etc/nginx/ssl/__GITLAB_FQDN__.crt;
+    ssl_certificate_key /etc/nginx/ssl/__GITLAB_FQDN__.key;
+
+    client_max_body_size 512m;
+
     location / {
-        proxy_pass http://127.0.0.1:${PMA_PORT};
-        include snippets/proxy_common.conf;
+        proxy_read_timeout 300;
+        proxy_connect_timeout 300;
+        proxy_pass http://127.0.0.1:__GITLAB_PORT__;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
+HTTPSGL
+)
 NGINX
 
-  ln -sf "/etc/nginx/sites-available/${GITLAB_HOST}.conf" "/etc/nginx/sites-enabled/${GITLAB_HOST}.conf"
-  ln -sf "/etc/nginx/sites-available/${PMA_HOST}.conf" "/etc/nginx/sites-enabled/${PMA_HOST}.conf"
+  # Fill TLS placeholders if enabled
+  if $ENABLE_TLS; then
+    sed -i \
+      -e "s|__PMA_FQDN__|${PMA_FQDN}|g" \
+      -e "s|__GITLAB_FQDN__|${GITLAB_FQDN}|g" \
+      -e "s|__PMA_PORT__|${PMA_PORT}|g" \
+      -e "s|__GITLAB_PORT__|${GITLAB_PORT}|g" \
+      "$NCONF"
+  fi
 
+  ln -sf "$NCONF" /etc/nginx/sites-enabled/fritz_stack.conf
+  if [[ -f /etc/nginx/sites-enabled/default ]]; then
+    rm -f /etc/nginx/sites-enabled/default
+  fi
+
+  log "Testing Nginx config..."
   nginx -t
   systemctl reload nginx
-  log "Nginx configured for https://${GITLAB_HOST} and https://${PMA_HOST}"
-}
-
-ensure_mysql_password() {
-  if [[ -z "${MYSQL_ROOT_PASSWORD}" ]]; then
-    mkdir -p "${STACK_DIR}"
-    if [[ -s "${STACK_DIR}/mysql_root_password.txt" ]]; then
-      MYSQL_ROOT_PASSWORD="$(cat "${STACK_DIR}/mysql_root_password.txt")"
-    else
-      MYSQL_ROOT_PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)"
-      echo "${MYSQL_ROOT_PASSWORD}" > "${STACK_DIR}/mysql_root_password.txt"
-      chmod 600 "${STACK_DIR}/mysql_root_password.txt"
-      warn "Generated MySQL root password saved to ${STACK_DIR}/mysql_root_password.txt"
-    fi
-  fi
-}
-
-deploy_mysql() {
-  ensure_docker_installed
-  ensure_mysql_password
-  log "Deploying MySQL 8 ..."
-  if docker ps -a --format '{{.Names}}' | grep -qx "${MYSQL_CONT}"; then
-    warn "Container ${MYSQL_CONT} already exists; (re)starting and ensuring network ..."
-    docker start "${MYSQL_CONT}" >/dev/null 2>&1 || true
-    docker network connect "${NET_NAME}" "${MYSQL_CONT}" 2>/dev/null || true
-  else
-    docker run -d --name "${MYSQL_CONT}" \
-      --network "${NET_NAME}" \
-      -e MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD}" \
-      -v mysql8_data:/var/lib/mysql \
-      -p ${MYSQL_PORT}:3306 \
-      --restart unless-stopped \
-      "${MYSQL_IMAGE}" \
-      --default-authentication-plugin=mysql_native_password
-  fi
-  log "MySQL ready on host port ${MYSQL_PORT}."
-}
-
-deploy_pma() {
-  ensure_docker_installed
-  log "Deploying phpMyAdmin ..."
-  if docker ps -a --format '{{.Names}}' | grep -qx "${PMA_CONT}"; then
-    warn "Container ${PMA_CONT} already exists; (re)starting and ensuring network ..."
-    docker start "${PMA_CONT}" >/dev/null 2>&1 || true
-    docker network connect "${NET_NAME}" "${PMA_CONT}" 2>/dev/null || true
-  else
-    docker run -d --name "${PMA_CONT}" \
-      --network "${NET_NAME}" \
-      -e PMA_HOST="${MYSQL_CONT}" \
-      -e PMA_ABSOLUTE_URI="https://${PMA_HOST}/" \
-      -p ${PMA_PORT}:80 \
-      --restart unless-stopped \
-      "${PMA_IMAGE}"
-  fi
-  log "phpMyAdmin proxied at https://${PMA_HOST}"
-}
-
-deploy_gitlab() {
-  ensure_docker_installed
-  log "Deploying GitLab CE (first boot can take a while) ..."
-  if docker ps -a --format '{{.Names}}' | grep -qx "${GITLAB_CONT}"; then
-    warn "Container ${GITLAB_CONT} already exists; (re)starting and ensuring network ..."
-    docker start "${GITLAB_CONT}" >/dev/null 2>&1 || true
-    docker network connect "${NET_NAME}" "${GITLAB_CONT}" 2>/dev/null || true
-  else
-    docker run -d --name "${GITLAB_CONT}" \
-      --hostname "${GITLAB_HOST}" \
-      --network "${NET_NAME}" \
-      -p ${GITLAB_HTTP_PORT}:80 \
-      -p ${GITLAB_SSH_PORT}:22 \
-      -v gitlab_config:/etc/gitlab \
-      -v gitlab_logs:/var/log/gitlab \
-      -v gitlab_data:/var/opt/gitlab \
-      -e GITLAB_OMNIBUS_CONFIG="external_url 'https://${GITLAB_HOST}';
-nginx['listen_port']=80;
-nginx['listen_https']=false;" \
-      --restart unless-stopped \
-      "${GITLAB_IMAGE}"
-  fi
-  log "GitLab proxied at https://${GITLAB_HOST} (container HTTP on 127.0.0.1:${GITLAB_HTTP_PORT}, SSH on ${GITLAB_SSH_PORT})."
-}
-
-# ----------------- Execution (ordered) -----------------
-if $DO_PACKAGES; then
-  # First: Docker + Nginx
-  install_docker_and_nginx
-  # Then: AFTER Docker, the Ansible + pip stack you specified
-  setup_ansible_and_python_stack
-fi
-
-if $DO_CERTS;    then generate_certs; fi
-if $DO_NGINX;    then configure_nginx; fi
-if $DO_MYSQL;    then deploy_mysql; fi
-if $DO_PMA;      then deploy_pma; fi
-if $DO_GITLAB;   then deploy_gitlab; fi
-
-# If user asked only for the Ansible/PIP tasks, still keep your order (after Docker)
-if $DO_ANSIBLE_COLLECTION || $DO_PIP_MODULES; then
-  setup_ansible_and_python_stack
 fi
 
 log "Done."
+
+# -------- Output summary --------
+echo
+echo "=============================================="
+echo " Domain:         ${DOMAIN}"
+echo " phpMyAdmin:     ${SCHEME_HTTP}://${PMA_FQDN}"
+echo " GitLab:         ${SCHEME_HTTP}://${GITLAB_FQDN}"
+echo " MySQL root pw:  $( [[ -t 1 ]] && echo "(stored in ${MYSQL_ROOT_FILE})" )"
+echo " Compose file:   ${COMPOSE_FILE}"
+echo " Docker network: ${NETWORK_NAME}"
+$ENABLE_TLS && echo " TLS:            self-signed certs installed under /etc/nginx/ssl"
+echo "=============================================="
+echo
+warn "Make sure DNS resolves ${PMA_FQDN} and ${GITLAB_FQDN} to this server.
+For quick local testing on this host, add to /etc/hosts:
+  127.0.0.1  ${PMA_FQDN} ${GITLAB_FQDN}"
