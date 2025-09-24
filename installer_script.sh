@@ -311,6 +311,24 @@ NGINX
   systemctl reload nginx
 fi
 
+cd /opt/fritz_stack
+docker compose stop mysql || true
+docker compose rm -f mysql || true
+
+sed -i '/default-authentication-plugin=mysql_native_password/d' docker-compose.yml
+
+sudo rm -rf /opt/fritz_stack/mysql/data
+sudo mkdir -p /opt/fritz_stack/mysql/data
+sudo chown -R 999:999 /opt/fritz_stack/mysql
+
+docker compose up -d mysql
+
+add-apt-repository --yes --update ppa:ansible/ansible
+apt update
+apt install -y software-properties-common ansible pip
+ansible-galaxy collection install check_point.mgmt --force
+pip install setuptools psycopg2-binary gitpython  pymysql  mysql-connector-python requests netmiko pyats httpx beautifulsoup4 lxml python-dateutil pytz pymongo cryptography bcrypt boto3 azure-mgmt-resource azure-storage-blob pexpect paramiko-expect paramiko
+
 
 log "Done."
 echo
@@ -318,7 +336,9 @@ echo "=============================================="
 echo " Domain:         ${DOMAIN}"
 echo " phpMyAdmin:     ${SCHEME}://${PMA_FQDN}"
 echo " GitLab:         ${SCHEME}://${GITLAB_FQDN}"
-echo " MySQL root pw:  (stored in ${MYSQL_ROOT_FILE})"
+sudo docker exec -t gitlab bash -lc "cat /etc/gitlab/initial_root_password || true"
+echo " MySQL root pw:  "
+cat ${MYSQL_ROOT_FILE}
 echo " Compose file:   ${COMPOSE_FILE}"
 echo " Docker network: ${NETWORK_NAME}"
 $ENABLE_TLS && echo " TLS:            self-signed certs installed under /etc/nginx/ssl"
