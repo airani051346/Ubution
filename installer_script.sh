@@ -1,663 +1,410 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2155
 set -euo pipefail
 
 # ==============================================
-# installer_script.sh
+# install_fritz_stack.sh
 # One-host setup for:
-#   - Docker + docker compose plugin
+#   - Docker + Nginx (host)
+#   - Self-signed wildcard TLS for fritz.lan
 #   - MySQL 8 (Docker)
 #   - phpMyAdmin (Docker)
-#   - GitLab Omnibus (Docker)
-#   - Nginx (host) TLS reverse proxy
-#   - Local Docker Registry with basic auth (TLS via Nginx)
-#   - Optional: k3s (Kubernetes) to patch CoreDNS NodeHosts and trust local registry
-#
-# HTTPS via Nginx with mkcert for LAN/dev. CoreDNS patch lets pods resolve
-# gitlab/pma/registry to this node IP when k3s is enabled. Includes mkcert trust
-# for Docker & k3s, /etc/hosts entries, and registry auth fixes.
-#
-# NOTE: This is the AWX-free variant. All AWX operator/CRD deploys were removed.
+#   - GitLab CE (Docker)
+#   - Nginx TLS reverse proxy
+#   - Ansible + pip stack (AFTER Docker), Ansible collection, Python modules
 # ==============================================
 
 # ----------------- Defaults -----------------
 : "${DOMAIN:=fritz.lan}"
 : "${GITLAB_HOST:=gitlab.${DOMAIN}}"
 : "${PMA_HOST:=pma.${DOMAIN}}"
-: "${REGISTRY_HOST:=registry.${DOMAIN}}"
+: "${STACK_DIR:=/opt/fritz_stack}"
+: "${CERT_DIR:=/etc/nginx/certs/${DOMAIN}}"
+: "${MYSQL_ROOT_PASSWORD:=}"          # if empty, will be generated and saved
 
-: "${SERVER_IP:=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src"){print $(i+1); exit}}' || true)}"
-[[ -z "${SERVER_IP}" ]] && SERVER_IP="$(hostname -I | awk '{print $1}')"
+# Containers / images / network
+NET_NAME="fritz_net"
+MYSQL_CONT="mysql8"
+PMA_CONT="pma"
+GITLAB_CONT="gitlab"
+MYSQL_IMAGE="mysql:8"
+PMA_IMAGE="phpmyadmin:latest"
+GITLAB_IMAGE="gitlab/gitlab-ce:latest"
 
-: "${OS_RELEASE:=$(. /etc/os-release; echo "$ID")}" # expected: ubuntu
-
-# Docker compose project dir
-STACK_DIR=/opt/stack
-COMPOSE_DIR="$STACK_DIR/compose"
-COMPOSE_FILE="$COMPOSE_DIR/docker-compose.yml"
-
-# Certificates for Nginx (SAN cert for all hosts)
-CERT_DIR=/etc/nginx/certs
-CERT_PEM="$CERT_DIR/internal.pem"
-CERT_KEY="$CERT_DIR/internal.key"
-
-# Nginx config
-NGINX_SITE=/etc/nginx/sites-available/stack_apps.conf
-NGINX_SITE_LINK=/etc/nginx/sites-enabled/stack_apps.conf
-
-# k3s (optional)
-K3S_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-
-# GitLab container ports
+# Host ports
+MYSQL_PORT=3306
+PMA_PORT=8081
 GITLAB_HTTP_PORT=8929
 GITLAB_SSH_PORT=2222
 
-# phpMyAdmin bind port (loopback only)
-PMA_BIND_PORT=9001
-
-# MySQL
-MYSQL_PORT=3306
-MYSQL_ROOT_PASSWORD="ChangeMeStrong123"
-APP_DB_NAME=appdb
-APP_DB_USER=app_user
-APP_DB_PASS="AppDbStrong!123"
-
-# Local Docker Registry with Basic Auth (proxied via Nginx@443)
-REGISTRY_DIR="$STACK_DIR/registry"
-REGISTRY_AUTH_FILE="$REGISTRY_DIR/htpasswd"
-REGISTRY_DATA_DIR="$REGISTRY_DIR/data"
-REGISTRY_REALM="Registry"
-: "${REGISTRY_USER:=registry}"
-: "${REGISTRY_PASS:=ChangeMeReg123}"
-
 # Flags
-DO_REGISTRY=false
+DO_ALL=false
+DO_PACKAGES=false
+DO_CERTS=false
+DO_NGINX=false
 DO_MYSQL=false
 DO_PMA=false
 DO_GITLAB=false
-DO_NGINX=false
-DO_CERTS=false
-DO_K3S=false
-DO_STATUS=false
-DO_ALL=false
-DO_MYSQL_RESET=false
-DO_PATCH_DNS=true  # patch CoreDNS NodeHosts during/after k3s
-
-usage() {
-  cat <<USAGE
-Usage: $0 [--all] [--mysql] [--pma] [--gitlab] [--nginx] [--certs] [--k3s] [--status] [--registry]
-            [--domain DOMAIN] [--gitlab-host HOST] [--pma-host HOST] [--registry-host HOST]
-            [--server-ip IP]
-            [--mysql-port PORT] [--mysql-root-pass PASS]
-            [--app-db-name NAME] [--app-db-user USER] [--app-db-pass PASS]
-            [--gitlab-ssh-port PORT]
-            [--no-dns-patch]
-
-Examples:
-  sudo bash $0 --all --domain fritz.lan
-  sudo bash $0 --mysql --pma
-  sudo bash $0 --gitlab
-  sudo bash $0 --k3s
-  sudo bash $0 --registry --domain fritz.lan --registry-host registry.fritz.lan
-  sudo bash $0 --status
-USAGE
-}
-
-parse_args() {
-  local DID_SET_GITLAB_HOST=false
-  local DID_SET_PMA_HOST=false
-  local DID_SET_REGISTRY_HOST=false
-
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --all) DO_ALL=true ;;
-      --mysql) DO_MYSQL=true ;;
-      --pma) DO_PMA=true ;;
-      --gitlab) DO_GITLAB=true ;;
-      --nginx) DO_NGINX=true ;;
-      --certs) DO_CERTS=true ;;
-      --k3s) DO_K3S=true ;;
-      --status) DO_STATUS=true ;;
-      --registry) DO_REGISTRY=true ;;
-      --no-dns-patch) DO_PATCH_DNS=false ;;
-      --domain) DOMAIN="$2"; shift ;;
-      --gitlab-host) GITLAB_HOST="$2"; DID_SET_GITLAB_HOST=true; shift ;;
-      --pma-host) PMA_HOST="$2"; DID_SET_PMA_HOST=true; shift ;;
-      --registry-host) REGISTRY_HOST="$2"; DID_SET_REGISTRY_HOST=true; shift ;;
-      --server-ip) SERVER_IP="$2"; shift ;;
-      --mysql-port) MYSQL_PORT="$2"; shift ;;
-      --mysql-root-pass) MYSQL_ROOT_PASSWORD="$2"; shift ;;
-      --mysql-reset) DO_MYSQL_RESET=true ;;
-      --app-db-name) APP_DB_NAME="$2"; shift ;;
-      --app-db-user) APP_DB_USER="$2"; shift ;;
-      --app-db-pass) APP_DB_PASS="$2"; shift ;;
-      --gitlab-ssh-port) GITLAB_SSH_PORT="$2"; shift ;;
-      -h|--help) usage; exit 0 ;;
-      *) echo "[!] Unknown arg: $1" >&2; usage; exit 1 ;;
-    esac
-    shift
-  done
-
-  if $DO_ALL; then
-    DO_MYSQL=true; DO_PMA=true; DO_GITLAB=true; DO_K3S=true; DO_CERTS=true; DO_NGINX=true; DO_REGISTRY=true
-  fi
-
-  # Recompute hosts if only --domain was changed
-  $DID_SET_GITLAB_HOST   || GITLAB_HOST="gitlab.${DOMAIN}"
-  $DID_SET_PMA_HOST      || PMA_HOST="pma.${DOMAIN}"
-  $DID_SET_REGISTRY_HOST || REGISTRY_HOST="registry.${DOMAIN}"
-}
+DO_ANSIBLE_COLLECTION=false
+DO_PIP_MODULES=false
+DEBUG=false
 
 # ----------------- Helpers -----------------
-log(){ echo -e "[+] $*"; }
-err(){ echo -e "[!] $*" >&2; }
+log()  { echo -e "\033[1;32m[+] $*\033[0m"; }
+warn() { echo -e "\033[1;33m[!] $*\033[0m"; }
+err()  { echo -e "\033[1;31m[!] $*\033[0m" >&2; }
+need_root() { [[ $EUID -eq 0 ]] || { err "Please run as root (sudo)."; exit 1; }; }
 
-need_root(){
-  if [[ $EUID -ne 0 ]]; then
-    err "Please run as root (sudo)."; exit 1
-  fi
+trap 'err "Failed at line $LINENO. Last command: \"${BASH_COMMAND}\""' ERR
+
+usage() {
+  cat <<EOF
+Usage: $0 [actions] [options]
+
+Actions:
+  --all                      Run everything in the correct order
+  --packages                 Install Docker + Nginx + base packages, then (AFTER Docker) Ansible + pip stack
+  --certs                    Generate self-signed TLS for ${DOMAIN} and *.${DOMAIN}
+  --nginx                    Configure Nginx reverse proxy for GitLab + phpMyAdmin
+  --mysql                    Deploy MySQL 8 container
+  --pma                      Deploy phpMyAdmin container
+  --gitlab                   Deploy GitLab CE container
+  --ansible-collection       Install Ansible collection check_point.mgmt (ensures Docker first)
+  --pip-modules              Install Python (pip) modules list (ensures Docker first)
+  --debug                    Bash trace mode
+
+Options:
+  --domain <name>            Base domain (default: ${DOMAIN})
+  --gitlab-host <fqdn>       GitLab host (default: gitlab.\${DOMAIN})
+  --pma-host <fqdn>          phpMyAdmin host (default: pma.\${DOMAIN})
+  --mysql-root-password <pw> MySQL root password (random if omitted)
+
+Examples:
+  sudo $0 --all
+  sudo $0 --packages --certs --nginx
+  sudo $0 --mysql --pma --gitlab
+EOF
+  exit 1
 }
 
-check_os(){
-  if [[ "$OS_RELEASE" != "ubuntu" ]]; then
-    err "This script targets Ubuntu. Detected: $OS_RELEASE"; exit 1
-  fi
+# ----------------- Arg parsing -----------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --all) DO_ALL=true ;;
+    --packages) DO_PACKAGES=true ;;
+    --certs) DO_CERTS=true ;;
+    --nginx) DO_NGINX=true ;;
+    --mysql) DO_MYSQL=true ;;
+    --pma) DO_PMA=true ;;
+    --gitlab) DO_GITLAB=true ;;
+    --ansible-collection) DO_ANSIBLE_COLLECTION=true ;;
+    --pip-modules) DO_PIP_MODULES=true ;;
+    --debug) DEBUG=true ;;
+    --domain) DOMAIN="$2"; shift ;;
+    --gitlab-host) GITLAB_HOST="$2"; shift ;;
+    --pma-host) PMA_HOST="$2"; shift ;;
+    --mysql-root-password) MYSQL_ROOT_PASSWORD="$2"; shift ;;
+    -h|--help) usage ;;
+    *) err "Unknown arg: $1"; usage ;;
+  esac
+  shift
+done
+
+$DEBUG && set -x
+need_root
+
+# Apply domain-dependent defaults after possible overrides
+GITLAB_HOST="${GITLAB_HOST:-gitlab.${DOMAIN}}"
+PMA_HOST="${PMA_HOST:-pma.${DOMAIN}}"
+CERT_DIR="/etc/nginx/certs/${DOMAIN}"
+
+# If --all, flip all toggles in the right order
+if $DO_ALL; then
+  DO_PACKAGES=true
+  DO_CERTS=true
+  DO_NGINX=true
+  DO_MYSQL=true
+  DO_PMA=true
+  DO_GITLAB=true
+  DO_ANSIBLE_COLLECTION=true
+  DO_PIP_MODULES=true
+fi
+
+# If no actions, show help
+if ! $DO_PACKAGES && ! $DO_CERTS && ! $DO_NGINX && ! $DO_MYSQL && ! $DO_PMA && ! $DO_GITLAB && ! $DO_ANSIBLE_COLLECTION && ! $DO_PIP_MODULES; then
+  usage
+fi
+
+mkdir -p "${STACK_DIR}"
+
+# ----------------- Functions -----------------
+ensure_service() {
+  local svc="$1"
+  systemctl enable --now "$svc" >/dev/null 2>&1 || true
 }
 
-apt_install(){
-  sudo add-apt-repository --yes --update ppa:ansible/ansible
-  DEBIAN_FRONTEND=noninteractive apt-get update -y
-  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+install_docker_and_nginx() {
+  log "Installing Docker + Nginx + base packages ..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y \
     apt-transport-https ca-certificates curl gnupg lsb-release jq git make openssl \
-    docker.io nginx python3 python3-yaml apache2-utils software-properties-common ansible pip
-    
-  sudo ansible-galaxy collection install check_point.mgmt --force
-  sudo pip install setuptools psycopg2-binary gitpython  pymysql  mysql-connector-python requests netmiko pyats httpx beautifulsoup4 lxml python-dateutil pytz pymongo cryptography bcrypt boto3 azure-mgmt-resource azure-storage-blob pexpect paramiko-expect paramiko
-  systemctl enable --now docker
-  systemctl enable --now nginx
-}
+    docker.io nginx python3 python3-yaml apache2-utils software-properties-common
 
-ensure_compose(){
-  if ! docker compose version >/dev/null 2>&1; then
-    log "Installing docker compose plugin"
-    mkdir -p /usr/local/lib/docker/cli-plugins
-    curl -L "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-$(uname -s)-$(uname -m)" \
-      -o /usr/local/lib/docker/cli-plugins/docker-compose
-    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-  fi
-}
+  ensure_service docker
+  ensure_service nginx
 
-install_mkcert(){
-  if ! command -v mkcert >/dev/null 2>&1; then
-    log "Installing mkcert"
-    curl -L https://github.com/FiloSottile/mkcert/releases/latest/download/mkcert-v1.4.4-linux-amd64 \
-      -o /usr/local/bin/mkcert && chmod +x /usr/local/bin/mkcert
-    mkcert -install || true
-  fi
-}
-
-make_certs(){
-  mkdir -p "$CERT_DIR"
-  local need=0
-  if [[ -s "$CERT_PEM" && -s "$CERT_KEY" ]]; then
-    for h in "$GITLAB_HOST" "$PMA_HOST" "$REGISTRY_HOST"; do
-      if ! openssl x509 -in "$CERT_PEM" -noout -text 2>/dev/null | grep -q "DNS:${h}"; then need=1; fi
-    done
+  # Create docker network (idempotent)
+  if ! docker network ls --format '{{.Name}}' | grep -qx "${NET_NAME}"; then
+    log "Creating docker network: ${NET_NAME}"
+    docker network create "${NET_NAME}"
   else
-    need=1
+    warn "Docker network ${NET_NAME} already exists."
   fi
-  if [[ $need -eq 1 ]]; then
-    log "Generating SAN cert for $GITLAB_HOST, $PMA_HOST, $REGISTRY_HOST"
-    mkcert -cert-file "$CERT_PEM" -key-file "$CERT_KEY" \
-      "$GITLAB_HOST" "$PMA_HOST" "$REGISTRY_HOST"
+}
+
+ensure_docker_installed() {
+  if ! command -v docker >/dev/null 2>&1; then
+    warn "Docker not found. Installing Docker + Nginx first ..."
+    install_docker_and_nginx
   else
-    log "Existing cert already has required SANs (skipping)"
+    ensure_service docker
+    docker network inspect "${NET_NAME}" >/dev/null 2>&1 || docker network create "${NET_NAME}"
   fi
 }
 
-# Trust mkcert CA for Docker daemon (so docker login/push to https://registry.host works)
-ensure_docker_trust(){
-  local caroot; caroot="$(mkcert -CAROOT)"
-  install -D -m 644 "${caroot}/rootCA.pem" /etc/docker/certs.d/${REGISTRY_HOST}/ca.crt || true
-  systemctl restart docker || true
-}
+# >>> This block runs AFTER Docker is installed (per your request)
+setup_ansible_and_python_stack() {
+  ensure_docker_installed  # keep the order constraint
 
-# Trust mkcert CA for k3s/containerd & configure mirror to https registry host
-ensure_registry_trust_for_k3s(){
-  install -d -m 755 /etc/rancher/k3s
-  local reg=/etc/rancher/k3s/registries.yaml
-  local caroot; caroot=$(mkcert -CAROOT)
-  install -D -m 644 "${caroot}/rootCA.pem" /usr/local/share/ca-certificates/mkcert-rootCA.crt || true
-  update-ca-certificates || true
-  cat >"$reg" <<EOF
-mirrors:
-  ${REGISTRY_HOST}:
-    endpoint:
-      - "https://${REGISTRY_HOST}"
-configs:
-  ${REGISTRY_HOST}:
-    tls:
-      ca_file: /usr/local/share/ca-certificates/mkcert-rootCA.crt
-EOF
-  systemctl restart k3s || true
-}
+  log "Adding Ansible PPA and installing Ansible + pip ..."
+  add-apt-repository --yes --update ppa:ansible/ansible
+  apt-get update -y
+  # 'pip' package is not present on modern Ubuntu; use python3-pip
+  apt-get install -y software-properties-common ansible python3-pip
 
-setup_registry_auth(){
-  mkdir -p "$REGISTRY_DIR" "$REGISTRY_DATA_DIR"
-  if [[ ! -s "$REGISTRY_AUTH_FILE" ]]; then
-    log "Creating registry htpasswd for ${REGISTRY_USER}"
-    docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$REGISTRY_USER" "$REGISTRY_PASS" > "$REGISTRY_AUTH_FILE"
-    chmod 640 "$REGISTRY_AUTH_FILE"
-  fi
-}
-
-ensure_hosts_entries(){
-  # helpful for the host itself (pods get CoreDNS NodeHosts below when k3s present)
-  local hosts_line="${SERVER_IP} ${GITLAB_HOST} ${PMA_HOST} ${REGISTRY_HOST}"
-  if ! grep -qE "[[:space:]]${GITLAB_HOST}([[:space:]]|$)" /etc/hosts; then
-    log "Adding host entries to /etc/hosts -> $hosts_line"
-    printf "%s\n" "$hosts_line" >> /etc/hosts
-  fi
-}
-
-mysql_volume_maybe_reset_first_boot(){
-  local vol="compose_mysql_data" mnt count
-  mnt="$(docker volume inspect "$vol" --format '{{.Mountpoint}}' 2>/dev/null || true)"
-  [[ -z "$mnt" ]] && return 0
-
-  count=$(find "$mnt" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')
-
-  # Markers we expect in a *valid* initialized dir
-  local has_ibdata=0 has_sysdir=0 has_auto=0
-  [[ -f "$mnt/ibdata1" ]] && has_ibdata=1
-  [[ -d "$mnt/mysql"   ]] && has_sysdir=1
-  [[ -f "$mnt/auto.cnf" ]] && has_auto=1
-
-  # If anything exists but it doesn't look fully initialized, nuke it.
-  if [[ "$count" -gt 0 && ( "$has_ibdata" -eq 0 || "$has_sysdir" -eq 0 || "$has_auto" -eq 0 ) ]]; then
-    log "MySQL volume looks half-initialized ($vol). Auto-resetting it once."
-    (cd "$COMPOSE_DIR" && docker compose down) || true
-    docker volume rm "$vol" || true
-  fi
-}
-
-write_compose(){
-  DOLLAR='$'
-  mkdir -p "$COMPOSE_DIR"
-  : > "$COMPOSE_FILE"
-  echo "services:" >> "$COMPOSE_FILE"
-
-  # MySQL
-  if $DO_MYSQL || $DO_PMA; then
-    cat >> "$COMPOSE_FILE" <<YAML
-  mysql:
-    image: mysql:8.4
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD}"
-      MYSQL_DATABASE: "${APP_DB_NAME}"
-      MYSQL_USER: "${APP_DB_USER}"
-      MYSQL_PASSWORD: "${APP_DB_PASS}"
-    ports:
-      - "0.0.0.0:${MYSQL_PORT}:3306"
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -uroot -p${DOLLAR}${DOLLAR}{MYSQL_ROOT_PASSWORD} --silent"]
-      interval: 5s
-      timeout: 5s
-      retries: 120
-      start_period: 60s
-    volumes:
-      - mysql_data:/var/lib/mysql
-    networks: [back]
-YAML
+  # Create a 'pip' shim if missing, to satisfy scripts that call 'pip'
+  if ! command -v pip >/dev/null 2>&1 && command -v pip3 >/dev/null 2>&1; then
+    ln -sf "$(command -v pip3)" /usr/local/bin/pip
   fi
 
-  # Local Registry (listens 127.0.0.1:5000; TLS via Nginx@443)
-  if $DO_REGISTRY; then
-    cat >> "$COMPOSE_FILE" <<YAML
-  registry:
-    image: registry:2
-    restart: unless-stopped
-    environment:
-      REGISTRY_HTTP_ADDR: "0.0.0.0:5000"
-      REGISTRY_STORAGE_DELETE_ENABLED: "true"
-      REGISTRY_AUTH: htpasswd
-      REGISTRY_AUTH_HTPASSWD_REALM: "${REGISTRY_REALM}"
-      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
-    ports:
-      - "127.0.0.1:5000:5000"
-    volumes:
-      - ${REGISTRY_DATA_DIR}:/var/lib/registry
-      - ${REGISTRY_AUTH_FILE}:/auth/htpasswd:ro
-    networks: [back]
-YAML
-  fi
+  log "Installing Ansible collection check_point.mgmt ..."
+  ansible-galaxy collection install check_point.mgmt --force
 
-  # phpMyAdmin
-  if $DO_PMA; then
-    cat >> "$COMPOSE_FILE" <<YAML
-  phpmyadmin:
-    image: phpmyadmin:latest
-    restart: unless-stopped
-    environment:
-      PMA_HOST: mysql
-      PMA_ABSOLUTE_URI: https://${PMA_HOST}/
-    depends_on: [mysql]
-    ports:
-      - "127.0.0.1:${PMA_BIND_PORT}:80"
-    networks: [back]
-YAML
-  fi
-
-  # GitLab
-  if $DO_GITLAB; then
-    cat >> "$COMPOSE_FILE" <<YAML
-  gitlab:
-    image: gitlab/gitlab-ee:latest
-    restart: unless-stopped
-    hostname: gitlab
-    shm_size: "512m"
-    environment:
-      GITLAB_OMNIBUS_CONFIG: |
-        external_url 'https://${GITLAB_HOST}'
-        nginx['listen_port'] = ${GITLAB_HTTP_PORT}
-        nginx['listen_https'] = false
-        gitlab_rails['gitlab_shell_ssh_port'] = ${GITLAB_SSH_PORT}
-    ports:
-      - "127.0.0.1:${GITLAB_HTTP_PORT}:${GITLAB_HTTP_PORT}"
-      - "0.0.0.0:${GITLAB_SSH_PORT}:22"
-    volumes:
-      - gitlab_config:/etc/gitlab
-      - gitlab_logs:/var/log/gitlab
-      - gitlab_data:/var/opt/gitlab
-    networks: [back]
-YAML
-  fi
-
-  # Networks + Volumes
-  cat >> "$COMPOSE_FILE" <<'YAML'
-networks:
-  back:
-volumes:
-YAML
-
-  if $DO_MYSQL || $DO_PMA; then echo "  mysql_data:" >> "$COMPOSE_FILE"; fi
-  if $DO_GITLAB; then
-    echo "  gitlab_config:" >> "$COMPOSE_FILE"
-    echo "  gitlab_logs:"   >> "$COMPOSE_FILE"
-    echo "  gitlab_data:"   >> "$COMPOSE_FILE"
-  fi
+  local PIP_CMD="$(command -v pip || command -v pip3)"
+  log "Installing Python modules via ${PIP_CMD} ..."
+  "${PIP_CMD}" install -U setuptools
+  "${PIP_CMD}" install \
+    psycopg2-binary gitpython pymysql mysql-connector-python requests netmiko pyats \
+    httpx beautifulsoup4 lxml python-dateutil pytz pymongo cryptography bcrypt \
+    boto3 azure-mgmt-resource azure-storage-blob pexpect paramiko-expect paramiko
 }
+# <<< End of AFTER-Docker block
 
-compose_up(){ (cd "$COMPOSE_DIR" && docker compose up -d); }
+generate_certs() {
+  log "Generating self-signed wildcard certificate for ${DOMAIN} ..."
+  mkdir -p "${CERT_DIR}"
+  local KEY="${CERT_DIR}/privkey.pem"
+  local CRT="${CERT_DIR}/fullchain.pem"
 
-mysql_reset_on_init_error(){
-  local cid
-  cid=$(docker ps --filter 'name=compose-mysql-1' -q || true)
-  [[ -z "$cid" ]] && return 0
-  if docker logs "$cid" --since=10m 2>&1 | grep -qE \
-     'data directory has files in it|designated data directory .* is unusable|Cannot create redo log files'; then
-    log "Detected MySQL init failure (bad data dir). Resetting volume once."
-    (cd "$COMPOSE_DIR" && docker compose down) || true
-    docker volume rm compose_mysql_data || true
-    compose_up
-  fi
-}
-
-mysql_bootstrap_wait(){
-  # Wait until container health is 'healthy'
-  log "Waiting for MySQL (container health=healthy)"
-  local cid state
-  cid=$(docker ps --filter 'name=compose-mysql-1' --format '{{.ID}}' | head -n1 || true)
-  if [[ -z "$cid" ]]; then err "MySQL container not found"; return 1; fi
-  for i in {1..240}; do  # up to ~8 minutes for first init
-    state=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null || true)
-    [[ "$state" == "healthy" ]] && return 0
-    sleep 2
-  done
-  err "MySQL did not become healthy in time"; return 1
-}
-
-write_nginx(){
-  cat > "$NGINX_SITE" <<NGINX
-# Redirect HTTP -> HTTPS for all hosts
-server {
-  listen 80;
-  server_name ${GITLAB_HOST} ${PMA_HOST} ${REGISTRY_HOST};
-  return 301 https://\$host\$request_uri;
-}
-
-# ============= GitLab =============
-server {
-  listen 443 ssl http2;
-  server_name ${GITLAB_HOST};
-  ssl_certificate ${CERT_PEM};
-  ssl_certificate_key ${CERT_KEY};
-  client_max_body_size 512m;
-  proxy_read_timeout 3600s;
-  proxy_send_timeout 3600s;
-  location / {
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_pass http://127.0.0.1:${GITLAB_HTTP_PORT};
-  }
-}
-
-# ============= Local Docker Registry (TLS via Nginx) =============
-# NOTE: HTTP/2 disabled for registry to avoid 400s on docker login/push.
-server {
-  listen 443 ssl;
-  server_name ${REGISTRY_HOST};
-  ssl_certificate ${CERT_PEM};
-  ssl_certificate_key ${CERT_KEY};
-  client_max_body_size 0;
-  chunked_transfer_encoding on;
-  add_header Docker-Distribution-Api-Version "registry/2.0" always;
-
-  location /v2/ {
-    proxy_http_version 1.1;
-    proxy_set_header Connection "";
-    proxy_set_header Host \$http_host;
-    proxy_set_header Authorization \$http_authorization;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto \$scheme;
-    proxy_pass http://127.0.0.1:5000;
-    proxy_request_buffering off;
-    proxy_buffering off;
-    proxy_read_timeout 900;
-    proxy_send_timeout 900;
-  }
-}
-
-# ============= phpMyAdmin =============
-server {
-  listen 443 ssl;
-  server_name ${PMA_HOST};
-  ssl_certificate ${CERT_PEM};
-  ssl_certificate_key ${CERT_KEY};
-  location / {
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_pass http://127.0.0.1:${PMA_BIND_PORT};
-  }
-}
-NGINX
-  ln -sf "$NGINX_SITE" "$NGINX_SITE_LINK"
-  nginx -t && systemctl reload nginx
-}
-
-ensure_k3s_config(){
-  install -d -m 755 /etc/rancher/k3s
-  cat >/etc/rancher/k3s/config.yaml <<EOF
-write-kubeconfig-mode: "0644"
-disable:
-  - traefik
-  - servicelb
-EOF
-}
-
-install_k3s(){
-  ensure_k3s_config
-  if [[ -f "$K3S_KUBECONFIG" ]]; then
-    log "k3s already installed; restarting"
-    systemctl restart k3s
+  if [[ -s "${KEY}" && -s "${CRT}" ]]; then
+    warn "Certificates already exist in ${CERT_DIR}, skipping."
     return
   fi
-  log "Installing k3s"
-  curl -sfL https://get.k3s.io | sh -
+
+  openssl req -x509 -nodes -newkey rsa:4096 -days 825 \
+    -keyout "${KEY}" -out "${CRT}" \
+    -subj "/CN=${DOMAIN}" \
+    -addext "subjectAltName = DNS:${DOMAIN},DNS:*.${DOMAIN}" \
+    -addext "keyUsage = digitalSignature, keyEncipherment" \
+    -addext "extendedKeyUsage = serverAuth"
+
+  chmod 600 "${KEY}"
+  log "Created: ${CRT} and ${KEY}"
 }
 
-cleanup_k3s_port_claimers(){
-  export KUBECONFIG="$K3S_KUBECONFIG"
-  kubectl -n kube-system delete deploy/traefik --ignore-not-found
-  kubectl -n kube-system delete svc/traefik --ignore-not-found
-  kubectl -n kube-system delete ds/svclb-traefik --ignore-not-found
+configure_hostsfile() {
+  if ! grep -qE "\\s${GITLAB_HOST}(\\s|$)" /etc/hosts; then
+    log "Adding ${GITLAB_HOST} to /etc/hosts -> 127.0.0.1"
+    echo "127.0.0.1 ${GITLAB_HOST}" >> /etc/hosts
+  fi
+  if ! grep -qE "\\s${PMA_HOST}(\\s|$)" /etc/hosts; then
+    log "Adding ${PMA_HOST} to /etc/hosts -> 127.0.0.1"
+    echo "127.0.0.1 ${PMA_HOST}" >> /etc/hosts
+  fi
 }
 
-kube_ready(){
-  export KUBECONFIG="$K3S_KUBECONFIG"
-  for i in {1..60}; do
-    kubectl get nodes >/dev/null 2>&1 && return 0
-    sleep 2
-  done
-  err "kubectl not ready"; return 1
-}
+configure_nginx() {
+  log "Configuring Nginx reverse proxy ..."
+  configure_hostsfile
 
-patch_coredns_hosts(){
-  $DO_PATCH_DNS || return 0
-  export KUBECONFIG="$K3S_KUBECONFIG"
-  local LINE="${SERVER_IP} ${GITLAB_HOST} ${PMA_HOST} ${REGISTRY_HOST}"
-
-  # Wait for CoreDNS ConfigMap
-  for i in {1..120}; do
-    kubectl -n kube-system get cm coredns >/dev/null 2>&1 && break || sleep 2
-  done || { err "CoreDNS configmap not found"; return 1; }
-
-  # Ensure hosts plugin exists once (merge Corefile if missing)
-  if ! kubectl -n kube-system get cm coredns -o jsonpath='{.data.Corefile}' | grep -q 'hosts /etc/coredns/NodeHosts'; then
-    kubectl -n kube-system patch cm coredns --type merge --patch \
-      '{"data":{"Corefile":".:53 {\n    errors\n    health\n    ready\n    kubernetes cluster.local in-addr.arpa ip6.arpa {\n      pods insecure\n      fallthrough in-addr.arpa ip6.arpa\n    }\n    hosts /etc/coredns/NodeHosts {\n      ttl 60\n      reload 15s\n      fallthrough\n    }\n    prometheus :9153\n    forward . /etc/resolv.conf\n    cache 30\n    loop\n    reload\n    loadbalance\n    import /etc/coredns/custom/*.override\n}\nimport /etc/coredns/custom/*.server\n"}}'
+  local SSL_CRT="${CERT_DIR}/fullchain.pem"
+  local SSL_KEY="${CERT_DIR}/privkey.pem"
+  if [[ ! -s "${SSL_CRT}" || ! -s "${SSL_KEY}" ]]; then
+    warn "TLS files missing in ${CERT_DIR}. Generating now ..."
+    generate_certs
   fi
 
-  # Merge NodeHosts content, JSON-escape via jq -Rs, retry on conflict
-  for i in {1..10}; do
-    cur="$(kubectl -n kube-system get cm coredns -o jsonpath='{.data.NodeHosts}' 2>/dev/null || true)"
-    new="$(printf "%s\n%s\n" "$cur" "$LINE" | awk '{$1=$1} NF' | awk '!seen[$0]++')"$'\n'
-    json_str="$(printf "%s" "$new" | jq -Rs .)"
+  cat > /etc/nginx/conf.d/websocket_upgrade.conf <<'CONF'
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  ''      close;
+}
+CONF
 
-    if kubectl -n kube-system patch cm coredns --type merge --patch "{\"data\":{\"NodeHosts\":${json_str}}}"; then
-      kubectl -n kube-system rollout restart deploy/coredns
-      return 0
+  mkdir -p /etc/nginx/snippets
+  cat > /etc/nginx/snippets/proxy_common.conf <<'PROXY'
+proxy_http_version 1.1;
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto https;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection $connection_upgrade;
+proxy_read_timeout 300;
+client_max_body_size 512m;
+PROXY
+
+  cat > "/etc/nginx/sites-available/${GITLAB_HOST}.conf" <<NGINX
+server {
+    listen 80;
+    server_name ${GITLAB_HOST};
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl http2;
+    server_name ${GITLAB_HOST};
+    ssl_certificate ${SSL_CRT};
+    ssl_certificate_key ${SSL_KEY};
+    location / {
+        proxy_pass http://127.0.0.1:${GITLAB_HTTP_PORT};
+        include snippets/proxy_common.conf;
+    }
+}
+NGINX
+
+  cat > "/etc/nginx/sites-available/${PMA_HOST}.conf" <<NGINX
+server {
+    listen 80;
+    server_name ${PMA_HOST};
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl http2;
+    server_name ${PMA_HOST};
+    ssl_certificate ${SSL_CRT};
+    ssl_certificate_key ${SSL_KEY};
+    location / {
+        proxy_pass http://127.0.0.1:${PMA_PORT};
+        include snippets/proxy_common.conf;
+    }
+}
+NGINX
+
+  ln -sf "/etc/nginx/sites-available/${GITLAB_HOST}.conf" "/etc/nginx/sites-enabled/${GITLAB_HOST}.conf"
+  ln -sf "/etc/nginx/sites-available/${PMA_HOST}.conf" "/etc/nginx/sites-enabled/${PMA_HOST}.conf"
+
+  nginx -t
+  systemctl reload nginx
+  log "Nginx configured for https://${GITLAB_HOST} and https://${PMA_HOST}"
+}
+
+ensure_mysql_password() {
+  if [[ -z "${MYSQL_ROOT_PASSWORD}" ]]; then
+    mkdir -p "${STACK_DIR}"
+    if [[ -s "${STACK_DIR}/mysql_root_password.txt" ]]; then
+      MYSQL_ROOT_PASSWORD="$(cat "${STACK_DIR}/mysql_root_password.txt")"
+    else
+      MYSQL_ROOT_PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)"
+      echo "${MYSQL_ROOT_PASSWORD}" > "${STACK_DIR}/mysql_root_password.txt"
+      chmod 600 "${STACK_DIR}/mysql_root_password.txt"
+      warn "Generated MySQL root password saved to ${STACK_DIR}/mysql_root_password.txt"
     fi
-    sleep 1
-  done
-
-  err "Failed to patch CoreDNS NodeHosts after retries"
-}
-
-docker_login_registry(){
-  log "Testing docker login to https://${REGISTRY_HOST}"
-  if ! printf '%s' "$REGISTRY_PASS" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin; then
-    err "docker login to ${REGISTRY_HOST} failed (check DNS/certs/Nginx/htpasswd)"
   fi
 }
 
-gitlab_initial_password(){
-  local cid
-  cid=$(docker ps --filter "name=gitlab" --format '{{.ID}}' | head -n1 || true)
-  if [[ -n "$cid" ]]; then
-    docker exec -t "$cid" bash -lc "cat /etc/gitlab/initial_root_password 2>/dev/null || true"
-  fi
-}
-
-print_summary(){
-  echo
-  echo "================ Deployment Summary ================"
-  echo "Server IP:        $SERVER_IP"
-  echo "Domain:           $DOMAIN"
-  echo "GitLab:           https://$GITLAB_HOST  (SSH: $GITLAB_SSH_PORT)"
-  echo "phpMyAdmin:       https://$PMA_HOST"
-  echo "Local Registry:   https://$REGISTRY_HOST (user: $REGISTRY_USER)"
-  echo
-  echo "MySQL DSN example:"
-  echo "  mysql+pymysql://${APP_DB_USER}:${APP_DB_PASS}@${SERVER_IP}:${MYSQL_PORT}/${APP_DB_NAME}"
-  echo
-  echo "GitLab initial root password file (if present, valid ~24h):"
-  gitlab_initial_password | sed 's/^/  /'
-  echo "===================================================="
-}
-
-status(){
-  echo "Docker containers:"; docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
-  echo
-  if systemctl is-active --quiet k3s 2>/dev/null; then
-    echo "Kubernetes (k3s) nodes:"; export KUBECONFIG="$K3S_KUBECONFIG"; kubectl get nodes 2>/dev/null || true
-    echo
-  fi
-  echo "Nginx vhosts:"; grep -n "server_name" "$NGINX_SITE" 2>/dev/null || true
-}
-
-# ----------------- Main -----------------
-need_root
-parse_args "$@"
-check_os
-
-# Base tooling
-if $DO_MYSQL || $DO_PMA || $DO_GITLAB || $DO_NGINX || $DO_CERTS || $DO_K3S || $DO_ALL || $DO_REGISTRY; then
-  apt_install
-  ensure_compose
-fi
-
-# Certs first (needed by Nginx & trust steps)
-if $DO_CERTS || $DO_REGISTRY || $DO_NGINX || $DO_ALL; then
-  install_mkcert
-  make_certs
-fi
-
-# Compose services
-if $DO_MYSQL || $DO_PMA || $DO_GITLAB || $DO_REGISTRY; then
-  $DO_REGISTRY && setup_registry_auth
-  if $DO_MYSQL_RESET; then
-    log "Resetting MySQL data volume (compose_mysql_data) — this will DELETE all DB data"
-    (cd "$COMPOSE_DIR" && docker compose down) || true
-    docker volume rm compose_mysql_data || true
+deploy_mysql() {
+  ensure_docker_installed
+  ensure_mysql_password
+  log "Deploying MySQL 8 ..."
+  if docker ps -a --format '{{.Names}}' | grep -qx "${MYSQL_CONT}"; then
+    warn "Container ${MYSQL_CONT} already exists; (re)starting and ensuring network ..."
+    docker start "${MYSQL_CONT}" >/dev/null 2>&1 || true
+    docker network connect "${NET_NAME}" "${MYSQL_CONT}" 2>/dev/null || true
   else
-    $DO_MYSQL && mysql_volume_maybe_reset_first_boot
+    docker run -d --name "${MYSQL_CONT}" \
+      --network "${NET_NAME}" \
+      -e MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD}" \
+      -v mysql8_data:/var/lib/mysql \
+      -p ${MYSQL_PORT}:3306 \
+      --restart unless-stopped \
+      "${MYSQL_IMAGE}" \
+      --default-authentication-plugin=mysql_native_password
   fi
-  write_compose
-  compose_up
-  $DO_MYSQL && mysql_reset_on_init_error
+  log "MySQL ready on host port ${MYSQL_PORT}."
+}
+
+deploy_pma() {
+  ensure_docker_installed
+  log "Deploying phpMyAdmin ..."
+  if docker ps -a --format '{{.Names}}' | grep -qx "${PMA_CONT}"; then
+    warn "Container ${PMA_CONT} already exists; (re)starting and ensuring network ..."
+    docker start "${PMA_CONT}" >/dev/null 2>&1 || true
+    docker network connect "${NET_NAME}" "${PMA_CONT}" 2>/dev/null || true
+  else
+    docker run -d --name "${PMA_CONT}" \
+      --network "${NET_NAME}" \
+      -e PMA_HOST="${MYSQL_CONT}" \
+      -e PMA_ABSOLUTE_URI="https://${PMA_HOST}/" \
+      -p ${PMA_PORT}:80 \
+      --restart unless-stopped \
+      "${PMA_IMAGE}"
+  fi
+  log "phpMyAdmin proxied at https://${PMA_HOST}"
+}
+
+deploy_gitlab() {
+  ensure_docker_installed
+  log "Deploying GitLab CE (first boot can take a while) ..."
+  if docker ps -a --format '{{.Names}}' | grep -qx "${GITLAB_CONT}"; then
+    warn "Container ${GITLAB_CONT} already exists; (re)starting and ensuring network ..."
+    docker start "${GITLAB_CONT}" >/dev/null 2>&1 || true
+    docker network connect "${NET_NAME}" "${GITLAB_CONT}" 2>/dev/null || true
+  else
+    docker run -d --name "${GITLAB_CONT}" \
+      --hostname "${GITLAB_HOST}" \
+      --network "${NET_NAME}" \
+      -p ${GITLAB_HTTP_PORT}:80 \
+      -p ${GITLAB_SSH_PORT}:22 \
+      -v gitlab_config:/etc/gitlab \
+      -v gitlab_logs:/var/log/gitlab \
+      -v gitlab_data:/var/opt/gitlab \
+      -e GITLAB_OMNIBUS_CONFIG="external_url 'https://${GITLAB_HOST}';
+nginx['listen_port']=80;
+nginx['listen_https']=false;" \
+      --restart unless-stopped \
+      "${GITLAB_IMAGE}"
+  fi
+  log "GitLab proxied at https://${GITLAB_HOST} (container HTTP on 127.0.0.1:${GITLAB_HTTP_PORT}, SSH on ${GITLAB_SSH_PORT})."
+}
+
+# ----------------- Execution (ordered) -----------------
+if $DO_PACKAGES; then
+  # First: Docker + Nginx
+  install_docker_and_nginx
+  # Then: AFTER Docker, the Ansible + pip stack you specified
+  setup_ansible_and_python_stack
 fi
 
-# Nginx (after compose so backends exist)
-if $DO_NGINX || $DO_REGISTRY || $DO_PMA || $DO_GITLAB; then
-  write_nginx
+if $DO_CERTS;    then generate_certs; fi
+if $DO_NGINX;    then configure_nginx; fi
+if $DO_MYSQL;    then deploy_mysql; fi
+if $DO_PMA;      then deploy_pma; fi
+if $DO_GITLAB;   then deploy_gitlab; fi
+
+# If user asked only for the Ansible/PIP tasks, still keep your order (after Docker)
+if $DO_ANSIBLE_COLLECTION || $DO_PIP_MODULES; then
+  setup_ansible_and_python_stack
 fi
 
-# Hostname resolution for the host itself
-ensure_hosts_entries
-
-# Docker trust for internal TLS registry, then test login
-if $DO_REGISTRY; then
-  ensure_docker_trust
-  docker_login_registry || true
-fi
-
-# k3s (and registry trust + optional DNS patch)
-if $DO_K3S; then
-  install_k3s
-  kube_ready
-  cleanup_k3s_port_claimers
-  ensure_registry_trust_for_k3s
-  $DO_PATCH_DNS && patch_coredns_hosts || true
-fi
-
-# MySQL bootstrap wait
-$DO_MYSQL && mysql_bootstrap_wait || true
-
-$DO_STATUS && status
-$DO_ALL && print_summary
+log "Done."
