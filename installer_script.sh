@@ -333,7 +333,7 @@ SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++
 echo " " >> /etc/hosts
 echo "${SERVER_IP}    ${GITLAB_FQDN}" >> /etc/hosts
 
-openssl s_client -showcerts -servername gitlab.fritz.lan -connect gitlab.fritz.lan:443 </dev/null | awk '/-----BEGIN CERTIFICATE-----/{i++} {print > "cert" i ".pem"}'
+openssl s_client -showcerts -servername gitlab.fritz.lan -connect gitlab.fritz.lan:443 </dev/null | sudo awk '/-----BEGIN CERTIFICATE-----/{i++} {print > "cert" i ".pem"}'
 sudo mkdir -p /usr/local/share/ca-certificates/extra
 sudo cp ~/cert1.pem /usr/local/share/ca-certificates/extra/gitlab-fritz-ca.crt
 sudo update-ca-certificates
