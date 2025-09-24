@@ -77,7 +77,7 @@ mkdir -p "$BASE_DIR" "$SECRETS_DIR"
 log "Installing base prereqs (no Docker yet)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release jq git make openssl software-properties-common nginx
+apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release jq git make openssl software-properties-common docker.io nginx python3 python3-yaml apache2-utils
 systemctl enable --now nginx
 
 # -------- Install Docker CE + plugins from Docker's official repo --------
