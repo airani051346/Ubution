@@ -147,14 +147,19 @@ services:
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+      MYSQL_ROOT_HOST: "%"           
     secrets:
       - mysql_root_password
-    command: ["--default-authentication-plugin=mysql_native_password"]
     ports:
       - "127.0.0.1:__MYSQL_PORT__:3306"
     volumes:
       - ./mysql/data:/var/lib/mysql
     networks: [ __NETWORK_NAME__ ]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -uroot --password=$$(cat /run/secrets/mysql_root_password) --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   pma:
     image: phpmyadmin:latest
