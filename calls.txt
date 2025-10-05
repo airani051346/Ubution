@@ -1,7 +1,0 @@
-python3 apply_cfg.py \
-  --host 192.168.178.123 \
-  --user admin \
-  --password 'zubur1' --expert-password 'zubur1' \
-  --gaia-mode spark \
-  --template /home/cpadmin/Ubution/rendered-config/vpn-gw-1.cfg \
-  --log-dir /home/cpadmin/Ubution/config-done
