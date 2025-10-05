@@ -1,13 +1,15 @@
 # how its designed to work:
 <img width="3428" height="2044" alt="image" src="https://github.com/user-attachments/assets/9657df03-7aff-4e11-a739-47023e960e47" />
 
+
 # how to install:
 set env variable for the installation session
 eg:
 ```bash
 curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/installer_script.sh | sudo bash -s -- --all --domain <mydomain.com>
 ```
-
+ git clone https://gitlab.fritz.lan/root/ubution.git
+ 
 # how to access GitLab::<br>
   URL:  https://gitlab.<-mydomain.com->
   Initial root password: 
