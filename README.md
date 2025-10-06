@@ -9,6 +9,7 @@ eg:
 curl -sSL https://raw.githubusercontent.com/airani051346/Ubution/refs/heads/main/installer_script.sh | sudo bash -s -- --all --domain <mydomain.com>
 ```
  git clone https://gitlab.fritz.lan/root/ubution.git
+ sudo ./install_zerotouch_flask.sh --app-dir /home/cpadmin/ubution/flask --service-name ztmApp --venv /home/cpadmin/ubution/flask/.venv --domain fritz.lan --host ztm --tls
  
 # how to access GitLab::<br>
   URL:  https://gitlab.<-mydomain.com->
